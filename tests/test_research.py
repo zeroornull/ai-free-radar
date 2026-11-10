@@ -22,7 +22,9 @@ from pydantic_ai.models.test import TestModel
 from aifreeradar.config import ConfigurationError, Settings, load_settings
 from aifreeradar.models import Category, Evidence, Policy, ResearchBatch, Resource, Scope
 from aifreeradar.research import (
+    BASELINE_QUERIES,
     MAX_BATCH_FETCH,
+    MAX_DIRECT_FETCH,
     MODEL_PAGE_LIMIT,
     RECHECK_GROUP_SIZE,
     FetchedPage,
@@ -624,7 +626,7 @@ async def test_configured_search_failure_is_reported_by_real_tool_loop(tmp_path)
         fetcher=cast(PublicPageFetcher, SourceTransport()),
     )
     batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
-    assert len(search.calls) == 1
+    assert search.calls  # baseline prepass and the agent tool share the one configured client
     assert any(
         "brave search failed" in failure and "no fallback" in failure for failure in batch.failures
     )
@@ -947,7 +949,7 @@ async def test_categories_research_concurrently(tmp_path, monkeypatch):
     finished = 0
     both_entered = asyncio.Event()
 
-    async def segment(prompt):
+    async def segment(prompt, **kwargs):
         nonlocal entered, finished
         entered += 1
         if entered == 2:
@@ -1003,7 +1005,7 @@ async def test_recheck_groups_batch_existing_resources(tmp_path, monkeypatch):
     )
     prompts = []
 
-    async def segment(prompt):
+    async def segment(prompt, **kwargs):
         prompts.append(prompt)
         if "EXISTING_RECORDS_JSON" in prompt:
             return ResearchBatch(), ResearchContext()
@@ -1094,7 +1096,7 @@ async def test_single_resource_scope_skips_discovery_and_rechecks_only_target(
     )
     prompts = []
 
-    async def segment(prompt):
+    async def segment(prompt, **kwargs):
         prompts.append(prompt)
         return (
             ResearchBatch(resources=[quoted_policy(resource_id=target.id)]),
@@ -1114,3 +1116,173 @@ async def test_single_resource_scope_skips_discovery_and_rechecks_only_target(
     assert peer.id not in prompts[0]
     assert search.calls == []
     assert [policy.resource_id for policy in batch.resources] == [target.id]
+
+
+def immediate_model():
+    """Return an immediate empty research batch without any tool call."""
+
+    def respond(messages, info):
+        return ModelResponse(
+            [
+                ToolCallPart(
+                    info.output_tools[0].name,
+                    ResearchBatch().model_dump(mode="json"),
+                )
+            ]
+        )
+
+    return FunctionModel(respond)
+
+
+class DirectTransport:
+    """Serve robots.txt and direct pages without touching the network."""
+
+    def __init__(self, links=(), robots="User-agent: *\nAllow: /\n"):
+        self.links = tuple(links)
+        self.robots = robots
+        self.calls: list[str] = []
+
+    async def fetch(self, url):
+        self.calls.append(url)
+        if url.endswith("/robots.txt"):
+            return FetchedPage(url, self.robots, CHECKED)
+        return FetchedPage(url, "Pricing page text with 免费额度", CHECKED, self.links)
+
+
+@pytest.mark.asyncio
+async def test_discovery_prepends_fixed_baseline_queries_before_model(tmp_path):
+    search = SearchTransport()
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=immediate_model(),
+        search_client=cast(SearchClient, search),
+        fetcher=cast(PublicPageFetcher, DirectTransport()),
+        direct_interval=0,
+    )
+
+    await researcher.research(Scope(categories=[Category.TEXT]), [])
+
+    expected = list(BASELINE_QUERIES[Category.TEXT])
+    assert len(expected) == 6
+    assert search.calls == expected
+    cjk = [query for query in expected if any("\u4e00" <= char <= "\u9fff" for char in query)]
+    assert cjk == expected[:3]
+    assert not any("\u4e00" <= char <= "\u9fff" for query in expected[3:] for char in query)
+    # Six of the sixteen search requests were spent before the model produced anything.
+    assert researcher.last_stats.search_calls == 6
+
+
+@pytest.mark.asyncio
+async def test_direct_source_fetch_and_filtered_links_become_leads(tmp_path):
+    entry = "https://example.com/pricing"
+    links = ["https://example.com/docs/pricing", "https://other.test/pricing"]
+    fetch = DirectTransport(links=links)
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path, direct_sources={"text": [entry]}),
+        model=immediate_model(),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, fetch),
+        direct_interval=0,
+    )
+
+    await researcher.research(Scope(categories=[Category.TEXT]), [])
+
+    assert fetch.calls.count(entry) == 1
+    assert fetch.calls.count("https://example.com/robots.txt") == 1
+    direct = [lead for lead in researcher.last_discoveries if lead.origin == "direct"]
+    link_leads = [lead for lead in researcher.last_discoveries if lead.origin == "link"]
+    assert [(lead.url, lead.source_class) for lead in direct] == [(entry, "official-verifiable")]
+    assert {lead.url: lead.source_class for lead in link_leads} == {
+        links[0]: "official-verifiable",
+        links[1]: "discovery-only",
+    }
+
+
+@pytest.mark.asyncio
+async def test_robots_disallow_blocks_direct_fetch_and_records_failure(tmp_path):
+    entry = "https://example.com/pricing"
+    fetch = DirectTransport(robots="User-agent: *\nDisallow: /pricing\n")
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path, direct_sources={"text": [entry]}),
+        model=immediate_model(),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, fetch),
+        direct_interval=0,
+    )
+
+    batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+
+    assert entry not in fetch.calls
+    assert any("robots.txt" in failure for failure in batch.failures)
+    assert not any(lead.origin == "direct" for lead in researcher.last_discoveries)
+
+
+@pytest.mark.asyncio
+async def test_direct_sources_are_capped_at_max_direct_fetch(tmp_path):
+    urls = [f"https://example.com/page-{index}" for index in range(MAX_DIRECT_FETCH + 1)]
+    fetch = DirectTransport()
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path, direct_sources={"text": urls}),
+        model=immediate_model(),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, fetch),
+        direct_interval=0,
+    )
+
+    batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+
+    page_calls = [call for call in fetch.calls if not call.endswith("/robots.txt")]
+    assert len(page_calls) == MAX_DIRECT_FETCH == 8
+    assert any("capped" in failure.lower() for failure in batch.failures)
+
+
+@pytest.mark.asyncio
+async def test_research_call_resets_previous_discoveries(tmp_path):
+    entry = "https://example.com/pricing"
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path, direct_sources={"text": [entry]}),
+        model=immediate_model(),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, DirectTransport()),
+        direct_interval=0,
+    )
+
+    await researcher.research(Scope(categories=[Category.TEXT]), [])
+    first_run = list(researcher.last_discoveries)
+    assert first_run
+
+    await researcher.research(Scope(categories=[Category.TEXT]), [])
+    second_run = researcher.last_discoveries
+    assert second_run is not first_run
+    assert len(second_run) == len(first_run)
+
+
+@pytest.mark.asyncio
+async def test_recheck_segment_uses_no_baseline_queries_or_leads(tmp_path, monkeypatch):
+    target = Resource(**quoted_policy().model_dump(), id="target-resource")
+    search = SearchTransport()
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=TestModel(),
+        search_client=cast(SearchClient, search),
+        fetcher=cast(PublicPageFetcher, SourceTransport()),
+        direct_interval=0,
+    )
+    prompts = []
+
+    async def segment(prompt, **kwargs):
+        prompts.append(prompt)
+        return (
+            ResearchBatch(resources=[quoted_policy(resource_id=target.id)]),
+            ResearchContext(pages={SOURCE: FetchedPage(SOURCE, QUOTE, CHECKED)}),
+        )
+
+    monkeypatch.setattr(researcher, "_segment", segment)
+    monkeypatch.setattr(researcher, "validate_policy", lambda policy, context: (policy, []))
+
+    await researcher.research(Scope(categories=[Category.TEXT], resource_ids=[target.id]), [target])
+
+    assert search.calls == []
+    assert researcher.last_discoveries == []
+    assert len(prompts) == 1
+    assert "BASELINE_RESULTS_JSON" not in prompts[0]

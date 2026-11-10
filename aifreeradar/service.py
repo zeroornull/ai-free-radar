@@ -238,9 +238,15 @@ class TaskManager:
                 from .research import HarnessResearcher
 
                 self._researcher = HarnessResearcher(self._settings_snapshot())
-            batch = ResearchBatch.model_validate(
-                await self._researcher.research(run.scope.model_copy(deep=True), existing)
+            researched = await self._researcher.research(
+                run.scope.model_copy(deep=True), existing
             )
+            try:
+                discoveries = list(getattr(self._researcher, "last_discoveries", []))
+                self.repository.record_discoveries(run.id, discoveries)
+            except Exception as exc:  # noqa: BLE001
+                failures.append(self._redact(f"保存发现来源失败：{type(exc).__name__}：{exc}"))
+            batch = ResearchBatch.model_validate(researched)
             self._attach_stats(run)
             batch.failures = [self._redact(reason) for reason in batch.failures]
             batch.notes = [self._redact(note) for note in batch.notes]
@@ -317,7 +323,12 @@ class TaskManager:
                 for change in self.repository.get_changes(run.id)
                 if change.resource_id not in ignored
             ]
-            markdown = render_briefing(run, resources, changes, failures)
+            try:
+                discoveries = self.repository.discoveries_for_run(run.id)
+            except Exception as exc:  # noqa: BLE001
+                failures.append(self._redact(f"读取发现来源失败：{type(exc).__name__}：{exc}"))
+                discoveries = []
+            markdown = render_briefing(run, resources, changes, failures, discoveries)
         except Exception as exc:  # noqa: BLE001
             run.status = "failed"
             failures.append(self._redact(f"生成简报失败：{type(exc).__name__}：{exc}"))

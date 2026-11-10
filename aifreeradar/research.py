@@ -18,6 +18,8 @@ import re
 import shutil
 import socket
 import tempfile
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -42,9 +44,11 @@ from pydantic_ai_harness.tool_output_limits import LocalFileStore
 
 from .config import ConfigurationError, Settings
 from .models import (
+    Category,
     CheckStatus,
     ChinaPolicy,
     Evidence,
+    LeadDiscovery,
     Policy,
     ResearchBatch,
     Resource,
@@ -75,6 +79,94 @@ MAX_BATCH_FETCH = 6
 BATCH_FETCH_CONCURRENCY = 4
 MODEL_PAGE_LIMIT = 12_000
 RECHECK_GROUP_SIZE = 4
+MAX_DIRECT_FETCH = 8
+BASELINE_QUERIES: dict[Category, tuple[str, ...]] = {
+    Category.TEXT: (
+        "免费 大模型 API 额度",
+        "免费 文本生成 API 试用",
+        "大语言模型 API 免费价格",
+        "free LLM API tier",
+        "free text generation API quota",
+        "large language model API free pricing",
+    ),
+    Category.IMAGE: (
+        "免费 图像生成 API 额度",
+        "免费 AI 绘图 API 试用",
+        "图像生成 API 免费价格",
+        "free image generation API tier",
+        "free AI image API quota",
+        "image generation API free pricing",
+    ),
+    Category.VIDEO: (
+        "免费 视频生成 API 额度",
+        "AI 视频生成 API 免费试用",
+        "视频生成 API 免费价格",
+        "free video generation API tier",
+        "free AI video API quota",
+        "video generation API free pricing",
+    ),
+    Category.SPEECH: (
+        "免费 语音合成 API 额度",
+        "语音识别 API 免费试用",
+        "语音 API 免费价格",
+        "free speech synthesis API tier",
+        "free speech to text API quota",
+        "speech API free pricing",
+    ),
+    Category.EMBEDDING: (
+        "免费 向量嵌入 API 额度",
+        "文本嵌入 API 免费试用",
+        "嵌入模型 API 免费价格",
+        "free embedding API tier",
+        "free text embedding API quota",
+        "embedding model API free pricing",
+    ),
+    Category.RERANK: (
+        "免费 重排序 API 额度",
+        "Rerank API 免费试用",
+        "重排模型 API 免费价格",
+        "free rerank API tier",
+        "free reranking API quota",
+        "rerank model API free pricing",
+    ),
+}
+
+_LINK_KEYWORD_PATTERN = re.compile(
+    r"pricing|price|free|quota|limit|rate|docs|documentation|api|plan|terms|polic|免费|价格|额度",
+    re.IGNORECASE,
+)
+
+
+def _robots_rules(text: str) -> list[tuple[bool, str]]:
+    """Extract Allow/Disallow prefix rules from User-agent: * groups."""
+    rules: list[tuple[bool, str]] = []
+    applies = False
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key, value = key.strip().lower(), value.strip()
+        if key == "user-agent":
+            applies = value == "*"
+        elif applies and key in {"allow", "disallow"} and value:
+            rules.append((key == "allow", value))
+    return rules
+
+
+def _robots_allows(rules: list[tuple[bool, str]], path: str) -> bool:
+    """Longest matching prefix wins; Allow beats an equally long Disallow."""
+    best_length = -1
+    allowed = True
+    for rule_allows, prefix in rules:
+        if path.startswith(prefix):
+            if len(prefix) > best_length:
+                best_length = len(prefix)
+                allowed = rule_allows
+            elif len(prefix) == best_length and rule_allows:
+                allowed = True
+    return allowed
+
 
 _CLIP_SEPARATOR = "\n…\n"
 _CLIP_NOTICE = "\n[已截取与免费政策相关的段落；完整原文仅用于应用侧引文校验]"
@@ -221,7 +313,7 @@ class FetchedPage:
     url: str
     text: str
     fetched_at: datetime = field(default_factory=_now)
-
+    links: tuple[str, ...] = ()
 
 class PublicPageFetcher:
     """GET public documentation pages, pinning validated DNS addresses per connection.
@@ -362,14 +454,29 @@ class PublicPageFetcher:
                     raise ResearchError("Policy source exceeds 2 MB read limit")
                 charset = response.headers.get_content_charset() or "utf-8"
                 text = content.decode(charset, errors="replace")
+                links: tuple[str, ...] = ()
                 if "html" in content_type:
                     soup = BeautifulSoup(text, "html.parser")
                     for hidden in soup.select("script,style,noscript,template,svg"):
                         hidden.decompose()
+                    collected: list[str] = []
+                    for anchor in soup.find_all("a", href=True):
+                        target = urljoin(url, str(anchor["href"]))
+                        parsed = urlsplit(target)
+                        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                            continue
+                        absolute = urlunsplit(
+                            (parsed.scheme, parsed.netloc, parsed.path, parsed.query, "")
+                        )
+                        if absolute not in collected:
+                            collected.append(absolute)
+                            if len(collected) >= 200:
+                                break
+                    links = tuple(collected)
                     text = soup.get_text(" ", strip=True)
                 if not text.strip():
                     raise ResearchError("Policy source contains no readable text")
-                return FetchedPage(url=url, text=" ".join(text.split()))
+                return FetchedPage(url=url, text=" ".join(text.split()), links=links)
             finally:
                 connection.close()
         raise ResearchError("Too many source redirects")
@@ -526,15 +633,27 @@ class HarnessResearcher:
         model: Model | None = None,
         search_client: SearchClient | None = None,
         fetcher: PublicPageFetcher | None = None,
+        direct_interval: float = 1.0,
     ):
         self.settings = settings
         self._injected_model = model
         self._search = search_client
         self.fetcher = fetcher or PublicPageFetcher()
+        self.direct_interval = direct_interval
         self.memory_store = FileStore(".", workspace=MemoryWorkspace(settings.data_dir / "memory"))
         self.last_stats = RunStats()
+        self.last_discoveries: list[LeadDiscovery] = []
         self._page_cache: dict[str, FetchedPage] = {}
         self._fetch_locks: dict[str, asyncio.Lock] = {}
+        self._robots_rules: dict[str, list[tuple[bool, str]]] = {}
+        self._host_last_request: dict[str, float] = {}
+
+    def _record_discovery(self, lead: LeadDiscovery) -> None:
+        """Append a lead once per (category, URL); the first recorded row wins."""
+        key = (lead.category, lead.url)
+        if any((row.category, row.url) == key for row in self.last_discoveries):
+            return
+        self.last_discoveries.append(lead)
 
     def _model(self) -> Model:
         if self._injected_model is not None:
@@ -623,7 +742,140 @@ class HarnessResearcher:
         await asyncio.gather(*(fetch_one(index) for index in pending))
         return [slot for slot in slots if slot is not None]
 
-    def _build_agent(self, context: ResearchContext | None = None) -> Agent[object, ResearchBatch]:
+    async def _pace(self, host: str) -> None:
+        """Space requests to one host by direct_interval seconds; zero disables pacing."""
+        if self.direct_interval <= 0:
+            self._host_last_request[host] = time.monotonic()
+            return
+        last = self._host_last_request.get(host)
+        if last is not None:
+            delay = self.direct_interval - (time.monotonic() - last)
+            if delay > 0:
+                await asyncio.sleep(delay)
+        self._host_last_request[host] = time.monotonic()
+
+    async def _robots_allowed(self, host: str, path: str) -> bool:
+        """Cache robots.txt rules per host; any fetch or parse failure allows access."""
+        rules = self._robots_rules.get(host)
+        if rules is None:
+            try:
+                page = await self._fetch_cached(f"https://{host}/robots.txt")
+                rules = _robots_rules(page.text)
+            except Exception:  # noqa: BLE001
+                rules = []
+            self._robots_rules[host] = rules
+        return _robots_allows(rules, path)
+
+    async def _discovery_prepass(self, category: Category, context: ResearchContext) -> str:
+        """Run baseline searches and direct crawls; return leads-only prompt text."""
+        search = self._search or SearchClient(self.settings)
+        baseline: list[dict[str, str]] = []
+        for query in BASELINE_QUERIES.get(category, ()):
+            context.search_count += 1
+            if context.search_count > 16:
+                context.failures.append("Research segment exceeded 16 search requests")
+                break
+            try:
+                rows = await search.search(query)
+            except Exception as error:  # noqa: BLE001
+                context.failures.append(
+                    f"{self.settings.search_provider} search failed "
+                    f"({type(error).__name__}); no fallback used"
+                )
+                break
+            for row in rows:
+                url = row.get("url")
+                if not isinstance(url, str) or not url:
+                    continue
+                baseline.append(
+                    {
+                        "title": str(row.get("title") or "")[:300],
+                        "url": url,
+                        "snippet": str(row.get("snippet") or "")[:300],
+                    }
+                )
+                self._record_discovery(
+                    LeadDiscovery(
+                        url=url,
+                        category=category,
+                        source_class="discovery-only",
+                        origin="search",
+                        provider=self.settings.search_provider,
+                        query=query,
+                    )
+                )
+
+        configured = list(self.settings.direct_sources.get(category.value, ()))
+        allow_hosts: set[str] = set()
+        for url in configured:
+            try:
+                _, host, _, _ = PublicPageFetcher.validate_url(url)
+            except Exception:  # noqa: BLE001 - invalid configured URLs are omitted
+                host = ""
+            if host:
+                allow_hosts.add(host)
+        direct: list[dict[str, Any]] = []
+        for url in configured[:MAX_DIRECT_FETCH]:
+            try:
+                canonical, host, _, _ = PublicPageFetcher.validate_url(url)
+            except Exception as error:  # noqa: BLE001
+                context.failures.append(f"Direct source rejected for {url}: {type(error).__name__}")
+                continue
+            path = urlsplit(canonical).path or "/"
+            if not await self._robots_allowed(host, path):
+                context.failures.append(f"robots.txt disallows direct source {canonical}")
+                continue
+            await self._pace(host)
+            context.fetch_count += 1
+            if context.fetch_count > 32:
+                context.failures.append("Research segment exceeded 32 page requests")
+                break
+            try:
+                page = await self._fetch_cached(canonical)
+            except Exception as error:  # noqa: BLE001
+                context.failures.append(
+                    f"Source retrieval failed for {canonical}: {type(error).__name__}"
+                )
+                continue
+            context.pages[canonical] = page
+            context.pages[page.url] = page
+            self._record_discovery(
+                LeadDiscovery(
+                    url=page.url,
+                    category=category,
+                    source_class="official-verifiable",
+                    origin="direct",
+                )
+            )
+            links = [link for link in page.links if _LINK_KEYWORD_PATTERN.search(link)][:20]
+            for link in links:
+                link_host = urlsplit(link).hostname or ""
+                self._record_discovery(
+                    LeadDiscovery(
+                        url=link,
+                        category=category,
+                        source_class="official-verifiable"
+                        if link_host in allow_hosts
+                        else "discovery-only",
+                        origin="link",
+                    )
+                )
+            direct.append({"url": page.url, "text": clip_for_model(page.text), "links": links})
+        if len(configured) > MAX_DIRECT_FETCH:
+            context.failures.append(
+                f"Direct sources capped at {MAX_DIRECT_FETCH} entry pages per category"
+            )
+        return (
+            "BASELINE_RESULTS_JSON:\n"
+            + json.dumps(baseline, ensure_ascii=False)
+            + "\nDIRECT_SOURCES_JSON:\n"
+            + json.dumps(direct, ensure_ascii=False)
+            + "\nThese are leads only; only fetched official pages can support evidence."
+        )
+
+    def _build_agent(
+        self, context: ResearchContext | None = None, category: Category | None = None
+    ) -> Agent[object, ResearchBatch]:
         """Real construction seam; injected Model/search/fetch permit offline contract tests."""
         context = context if context is not None else ResearchContext()
         search = self._search or SearchClient(self.settings)
@@ -635,11 +887,26 @@ class HarnessResearcher:
                 context.failures.append("Research segment exceeded 16 search requests")
                 return [{"error": context.failures[-1]}]
             try:
-                return await search.search(query)
+                rows = await search.search(query)
             except Exception as error:  # noqa: BLE001
                 message = f"{self.settings.search_provider} search failed ({type(error).__name__}); no fallback used"
                 context.failures.append(message)
                 return [{"error": message}]
+            if category is not None:
+                for row in rows:
+                    url = row.get("url")
+                    if isinstance(url, str) and url:
+                        self._record_discovery(
+                            LeadDiscovery(
+                                url=url,
+                                category=category,
+                                source_class="discovery-only",
+                                origin="search",
+                                provider=self.settings.search_provider,
+                                query=query,
+                            )
+                        )
+            return rows
 
         async def fetch_page(url: str) -> dict[str, str]:
             """Read a public original policy page. Only returned text can support evidence."""
@@ -886,9 +1153,19 @@ class HarnessResearcher:
                 errors.append(checked.failure_reason)
         return checked, errors
 
-    async def _segment(self, prompt: str) -> tuple[ResearchBatch, ResearchContext]:
+    async def _segment(
+        self,
+        prompt: str,
+        *,
+        category: Category | None = None,
+        prepare: Callable[[ResearchContext], Awaitable[str]] | None = None,
+    ) -> tuple[ResearchBatch, ResearchContext]:
         context = ResearchContext()
-        agent = self._build_agent(context)
+        if prepare is not None:
+            prepared = await prepare(context)
+            if prepared:
+                prompt = f"{prompt}\n{prepared}"
+        agent = self._build_agent(context, category)
         usage = None
         try:
             result = await agent.run(prompt)
@@ -945,7 +1222,14 @@ class HarnessResearcher:
     ) -> None:
         label = f"{category} / discovery"
         try:
-            result, context = await self._segment(prompt)
+            resolved = Category(category)
+            result, context = await self._segment(
+                prompt,
+                category=resolved,
+                prepare=lambda segment_context: self._discovery_prepass(
+                    resolved, segment_context
+                ),
+            )
             batch.failures.extend(
                 f"{label}: {failure}" for failure in result.failures + context.failures
             )
@@ -1093,8 +1377,11 @@ class HarnessResearcher:
         if self._search is None:
             self._search = SearchClient(self.settings)
         self.last_stats = RunStats()
+        self.last_discoveries = []
         self._page_cache = {}
         self._fetch_locks = {}
+        self._robots_rules = {}
+        self._host_last_request = {}
         batch = ResearchBatch(
             notes=[
                 f"Selected search: {self.settings.search_provider}; no native search or provider fallback.",

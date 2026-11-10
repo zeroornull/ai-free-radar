@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from datetime import datetime
 from html import escape
 from urllib.parse import quote, urlsplit
@@ -18,6 +19,7 @@ from .models import (
     UNKNOWN,
     Change,
     CheckStatus,
+    LeadDiscovery,
     Resource,
     ResourceStatus,
     Run,
@@ -170,8 +172,22 @@ def _stats_line(run: Run) -> str:
     )
 
 
+def _discovery_label(discovery: LeadDiscovery) -> str:
+    if discovery.origin == "direct":
+        return "官方目录直连"
+    if discovery.origin == "search":
+        provider = markdown_text(discovery.provider or "")
+        query = markdown_text(discovery.query or "")
+        return f"搜索（{provider}）：{query}"
+    return "目录链接"
+
+
 def render_briefing(
-    run: Run, resources: list[Resource], changes: list[Change], failures: list[str]
+    run: Run,
+    resources: list[Resource],
+    changes: list[Change],
+    failures: list[str],
+    discoveries: Sequence[LeadDiscovery] = (),
 ) -> str:
     local_time = run.started_at.astimezone()
     categories = "、".join(CATEGORY_LABELS[item] for item in run.scope.categories)
@@ -286,6 +302,20 @@ def render_briefing(
         lines.extend(["无。", ""])
 
     lines.extend(["## 待核实线索", ""])
+    if discoveries:
+        direct = sum(1 for item in discoveries if item.origin == "direct")
+        search = sum(1 for item in discoveries if item.origin == "search")
+        link = len(discoveries) - direct - search
+        lines.extend(
+            [
+                (
+                    f"本轮记录发现线索 {len(discoveries)} 条"
+                    f"（官方目录直连 {direct} / 搜索 {search} / 目录链接 {link}）；"
+                    "仅作线索，不作为官方依据。"
+                ),
+                "",
+            ]
+        )
     if pending:
         for resource in pending.values():
             reason = resource.failure_reason or "关键免费条件或对应官方依据未明确"
@@ -296,9 +326,19 @@ def render_briefing(
                     f"- {markdown_text(resource.service)}：{markdown_text(reason)}；不作为正式推荐。",
                     f"  - 线索入口：{markdown_link('API 入口', resource.api_url)}；{markdown_link('API 文档', resource.docs_url)}",
                     *_sources(resource),
-                    "",
                 ]
             )
+            lead = next(
+                (
+                    item
+                    for item in discoveries
+                    if item.url in {resource.docs_url, resource.api_url}
+                ),
+                None,
+            )
+            if lead is not None:
+                lines.append(f"  - 来源：{_discovery_label(lead)}")
+            lines.append("")
     else:
         lines.extend(["无。", ""])
 
