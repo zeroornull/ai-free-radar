@@ -1,0 +1,166 @@
+<script setup lang="ts">
+import { computed, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import type { AppRead, CreateTaskRequest, RunRead, Scope, TaskDetailRead } from '@/api/types'
+import { useStartTaskMutation } from '@/api/queries'
+import { labelFor } from '@/app/presentation'
+import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+
+type CategoryValue = NonNullable<Scope['categories']>[number]
+type RegionValue = Scope['region']
+
+const props = defineProps<{ app: AppRead }>()
+
+const router = useRouter()
+const {
+  mutateAsync,
+  isPending,
+  error: mutationError,
+  reset,
+} = useStartTaskMutation()
+
+// 仅在首次挂载时从默认范围深拷贝一次；轮询更新 app 时保留用户草稿。
+const draft = reactive<{ categories: CategoryValue[]; region: RegionValue }>({
+  categories: [...(props.app.default_scope.categories ?? [])],
+  region: props.app.default_scope.region,
+})
+
+const fieldsetRef = ref<HTMLElement | null>(null)
+const formError = ref('')
+
+const categoryOptions = computed(() =>
+  Object.entries(props.app.categories).map(([value, text]) => [value as CategoryValue, text] as const),
+)
+
+const orderedCategories = computed(() => {
+  const order = Object.keys(props.app.categories)
+  return [...draft.categories].sort((a, b) => order.indexOf(a) - order.indexOf(b))
+})
+
+const pending = computed(() => isPending.value)
+const activeRun = computed(() => props.app.active_run)
+const submitDisabled = computed(() => pending.value || activeRun.value !== null)
+
+const disabledReason = computed(() => {
+  if (pending.value) return '正在提交研究任务，请稍候。'
+  if (activeRun.value) return '已有研究任务运行中，完成后再发起下一项任务。'
+  return ''
+})
+
+const serverError = computed(() => mutationError.value?.message ?? '')
+const displayError = computed(() => formError.value || serverError.value)
+const describedBy = computed(() => (displayError.value ? 'scope-help task-error' : 'scope-help'))
+
+function clearErrors(): void {
+  if (formError.value) formError.value = ''
+  if (mutationError.value) reset()
+}
+
+function setCategory(value: CategoryValue, checked: boolean | 'indeterminate'): void {
+  if (checked === true) {
+    if (!draft.categories.includes(value)) draft.categories.push(value)
+  } else if (checked === false) {
+    draft.categories = draft.categories.filter((item) => item !== value)
+  }
+  clearErrors()
+}
+
+function onRegionChange(event: Event): void {
+  const target = event.target
+  if (!(target instanceof HTMLSelectElement)) return
+  const value = target.value
+  if (value === 'global' || value === 'china') {
+    draft.region = value
+    clearErrors()
+  }
+}
+
+function extractRunId(created: unknown): string | null {
+  if (created && typeof created === 'object') {
+    if ('run' in created) {
+      const detail = created as TaskDetailRead
+      if (typeof detail.run?.id === 'string') return detail.run.id
+    }
+    if ('id' in created) {
+      const run = created as RunRead
+      if (typeof run.id === 'string') return run.id
+    }
+  }
+  return null
+}
+
+async function submit(): Promise<void> {
+  if (draft.categories.length === 0) {
+    formError.value = '请选择至少一个 API 类别。'
+    fieldsetRef.value?.focus()
+    return
+  }
+  formError.value = ''
+  const payload: CreateTaskRequest = {
+    categories: orderedCategories.value,
+    region: draft.region,
+  }
+  try {
+    const created: unknown = await mutateAsync(payload)
+    const runId = extractRunId(created)
+    if (runId) await router.push(`/tasks/${runId}`)
+  } catch {
+    // 失败原因由 mutationError 呈现；草稿保持不变。
+  }
+}
+</script>
+
+<template>
+  <section class="panel" aria-labelledby="start-task">
+    <h2 id="start-task">发起研究任务</h2>
+    <p id="scope-help">选择至少一个 API 类别。研究将发现新资源并复查范围内已有记录，不注册账号、不领取权益、不调用候选 API。</p>
+    <div v-if="displayError" id="task-error" class="error-message" role="alert">
+      <strong>任务未发起</strong>
+      <p>{{ displayError }}</p>
+    </div>
+    <form novalidate @submit.prevent="submit">
+      <fieldset
+        ref="fieldsetRef"
+        class="scope-fieldset"
+        tabindex="-1"
+        :aria-describedby="describedBy"
+      >
+        <legend class="scope-legend">本次 API 类别</legend>
+        <div class="checkbox-grid">
+          <Label
+            v-for="[value, text] in categoryOptions"
+            :key="value"
+            class="check-option"
+            :for="`task-category-${value}`"
+          >
+            <Checkbox
+              :id="`task-category-${value}`"
+              :model-value="draft.categories.includes(value)"
+              @update:model-value="(checked) => setCategory(value, checked)"
+            />
+            {{ text }}
+          </Label>
+        </div>
+      </fieldset>
+      <div class="field" @change="onRegionChange">
+        <Label for="region">本次地区条件</Label>
+        <NativeSelect
+          id="region"
+          class="[&>select]:h-11"
+          :model-value="draft.region"
+          aria-describedby="region-help"
+        >
+          <NativeSelectOption value="global">{{ labelFor(app, 'global') }}</NativeSelectOption>
+          <NativeSelectOption value="china">{{ labelFor(app, 'china') }}</NativeSelectOption>
+        </NativeSelect>
+        <p id="region-help" class="form-note">中国大陆条件要求核查官方注册及使用政策；不等于网络连通测试。依据不明的资源保留为待核实。</p>
+      </div>
+      <p class="sr-only" role="status" aria-live="polite">{{ disabledReason }}</p>
+      <Button type="submit" class="h-11" :disabled="submitDisabled">{{ pending ? '正在提交…' : '发起本次研究' }}</Button>
+      <p v-if="disabledReason" class="form-note">{{ disabledReason }}</p>
+    </form>
+  </section>
+</template>

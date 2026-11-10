@@ -1,0 +1,34 @@
+{
+  "_comment": "Seed benchmark targets for coverage evaluation. Each object has exactly provider, service, category and official_url; category is one of text, image, video, speech, embedding, rerank and there are exactly four targets per category. official_url is the provider's real public pricing or documentation page reachable over https.",
+  "targets": [
+    {"provider": "OpenAI", "service": "GPT-4o mini", "category": "text", "official_url": "https://platform.openai.com/docs/pricing"},
+    {"provider": "Google", "service": "Gemini Flash", "category": "text", "official_url": "https://ai.google.dev/gemini-api/docs/pricing"},
+    {"provider": "Anthropic", "service": "Claude Haiku", "category": "text", "official_url": "https://docs.claude.com/en/docs/about-claude/pricing"},
+    {"provider": "DeepSeek", "service": "DeepSeek Chat", "category": "text", "official_url": "https://api-docs.deepseek.com/quick_start/pricing"},
+
+    {"provider": "Stability AI", "service": "Stable Diffusion", "category": "image", "official_url": "https://platform.stability.ai/pricing"},
+    {"provider": "Replicate", "service": "FLUX", "category": "image", "official_url": "https://replicate.com/pricing"},
+    {"provider": "Cloudflare", "service": "Workers AI", "category": "image", "official_url": "https://developers.cloudflare.com/workers-ai/platform/pricing/"},
+    {"provider": "fal.ai", "service": "FLUX", "category": "image", "official_url": "https://fal.ai/pricing"},
+
+    {"provider": "Google", "service": "Veo", "category": "video", "official_url": "https://ai.google.dev/gemini-api/docs/pricing"},
+    {"provider": "Runway", "service": "Gen-3 Alpha", "category": "video", "official_url": "https://runwayml.com/pricing"},
+    {"provider": "Luma AI", "service": "Dream Machine", "category": "video", "official_url": "https://lumalabs.ai/pricing"},
+    {"provider": "Replicate", "service": "Wan", "category": "video", "official_url": "https://replicate.com/pricing"},
+
+    {"provider": "ElevenLabs", "service": "Text to Speech", "category": "speech", "official_url": "https://elevenlabs.io/pricing/api"},
+    {"provider": "OpenAI", "service": "Text to Speech", "category": "speech", "official_url": "https://platform.openai.com/docs/pricing"},
+    {"provider": "Deepgram", "service": "Nova", "category": "speech", "official_url": "https://deepgram.com/pricing"},
+    {"provider": "AssemblyAI", "service": "Speech to Text", "category": "speech", "official_url": "https://www.assemblyai.com/pricing"},
+
+    {"provider": "OpenAI", "service": "text-embedding-3-small", "category": "embedding", "official_url": "https://platform.openai.com/docs/pricing"},
+    {"provider": "Cohere", "service": "Embed", "category": "embedding", "official_url": "https://cohere.com/pricing"},
+    {"provider": "Voyage AI", "service": "voyage-3", "category": "embedding", "official_url": "https://docs.voyageai.com/docs/pricing"},
+    {"provider": "Together AI", "service": "Embeddings", "category": "embedding", "official_url": "https://www.together.ai/pricing"},
+
+    {"provider": "Cohere", "service": "Rerank", "category": "rerank", "official_url": "https://cohere.com/pricing"},
+    {"provider": "Voyage AI", "service": "rerank-2", "category": "rerank", "official_url": "https://docs.voyageai.com/docs/pricing"},
+    {"provider": "Jina AI", "service": "Jina Reranker", "category": "rerank", "official_url": "https://jina.ai/reranker"},
+    {"provider": "Pinecone", "service": "Rerank", "category": "rerank", "official_url": "https://www.pinecone.io/pricing/"}
+  ]
+}

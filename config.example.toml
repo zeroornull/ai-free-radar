@@ -1,0 +1,44 @@
+# Copy to config.toml. These are startup defaults read on each launch; the
+# settings page (/settings) stores database overrides that take precedence
+# over this file and survive restarts. This file is never written back.
+# Credentials: database secret (per *_api_key_env) > literal *_api_key below
+# > *_api_key_env environment variable. Put real keys in the settings page
+# or .env; do not add literal secrets to this file.
+#
+# Example .env: OPENAI_API_KEY=your-real-key
+# Set model_api_key_env explicitly when changing provider; no credential fallback.
+model = "openai:gpt-4.1-mini"
+model_api_key_env = "OPENAI_API_KEY"
+# Optional endpoint. Required for compatible:; never assumed to be OpenAI.
+# Grok: model="compatible:grok-4.7", model_base_url="https://api.x.ai/v1",
+# model_api_key_env="XAI_API_KEY"
+# model_base_url = "https://api.x.ai/v1"
+# Claude: model="anthropic:claude-sonnet-4-5", model_api_key_env="ANTHROPIC_API_KEY"
+# DeepSeek: model="deepseek:deepseek-chat", model_api_key_env="DEEPSEEK_API_KEY"
+
+# Exactly duckduckgo, tavily, brave, or exa. Search never switches provider.
+search_provider = "duckduckgo"
+search_api_key_env = ""
+# For tavily use search_provider="tavily", search_api_key_env="TAVILY_API_KEY".
+# For brave use search_provider="brave", search_api_key_env="BRAVE_API_KEY".
+# For exa use search_provider="exa", search_api_key_env="EXA_API_KEY".
+# Put those keys in .env or save them from the settings page; literals here
+# remain supported but the settings page/database is the normal place.
+
+host = "127.0.0.1"
+port = 8765
+schedule_enabled = true
+schedule_time = "09:00"
+
+# Optional direct discovery entry pages, grouped by category. TOML-only: the
+# settings page (/settings) cannot edit this table. Keys must be exact
+# category names; values are absolute http(s) URLs. Entries are allowlisted
+# entry pages (official pricing/docs pages, not bare API endpoints); their
+# links are followed one hop. Empty or absent disables direct sources.
+# [direct_sources]
+# text = ["https://platform.openai.com/docs/pricing", "https://platform.openai.com/docs/models"]
+# image = ["https://platform.openai.com/docs/guides/image-generation"]
+
+[default_scope]
+categories = ["text", "image", "video", "speech", "embedding", "rerank"]
+region = "global"

@@ -1,0 +1,340 @@
+import { computed, onScopeDispose, ref, toValue, watch, type MaybeRefOrGetter } from 'vue'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
+import { request } from './client'
+import { autoRefreshEnabled } from '@/app/refresh'
+import type {
+  AppRead,
+  BriefingRead,
+  CreateTaskRequest,
+  LeadRead,
+  Resource,
+  ResourceDetailRead,
+  ResourceReview,
+  ReviewAction,
+  ReviewRead,
+  RunRead,
+  SettingsPatchRequest,
+  SettingsRead,
+  SettingsResetRequest,
+  SettingsTestRead,
+  SettingsTestRequest,
+  TaskDetailRead,
+} from './types'
+
+export interface ResourceFilters {
+  category: string
+  china_policy: string
+  status: string
+}
+
+const IDLE_POLL_INTERVAL = 5000
+const RUNNING_POLL_INTERVAL = 2000
+
+const documentVisible = ref(typeof document === 'undefined' ? true : document.visibilityState === 'visible')
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    documentVisible.value = document.visibilityState === 'visible'
+  })
+}
+
+interface PollableQuery {
+  refetch: () => Promise<unknown>
+}
+
+function useVisiblePolling(query: PollableQuery, interval: MaybeRefOrGetter<number | false>): void {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let disposed = false
+
+  const clear = (): void => {
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      timer = undefined
+    }
+  }
+
+  const schedule = (): void => {
+    clear()
+    if (disposed) return
+    const delay = toValue(interval)
+    if (delay === false || delay <= 0) return
+    timer = setTimeout(() => {
+      timer = undefined
+      void query
+        .refetch()
+        .catch(() => undefined)
+        .finally(() => {
+          if (!disposed) schedule()
+        })
+    }, delay)
+  }
+
+  watch(() => toValue(interval), schedule, { immediate: true })
+  onScopeDispose(() => {
+    disposed = true
+    clear()
+  })
+}
+
+function filterSnapshot(filters: ResourceFilters): ResourceFilters {
+  return {
+    category: filters.category ?? '',
+    china_policy: filters.china_policy ?? '',
+    status: filters.status ?? '',
+  }
+}
+
+function resourcesPath(filters: ResourceFilters): string {
+  const params = new URLSearchParams()
+  if (filters.category) params.set('category', filters.category)
+  if (filters.china_policy) params.set('china_policy', filters.china_policy)
+  if (filters.status) params.set('status', filters.status)
+  const search = params.toString()
+  return search ? `/api/resources?${search}` : '/api/resources'
+}
+
+let appPollingInstalled = false
+
+export function useAppQuery() {
+  const query = useQuery<AppRead, Error>({
+    queryKey: ['app'],
+    queryFn: () => request<AppRead>('/api/app'),
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  if (!appPollingInstalled) {
+    appPollingInstalled = true
+    useVisiblePolling(query, () =>
+      autoRefreshEnabled.value && documentVisible.value ? IDLE_POLL_INTERVAL : false,
+    )
+  }
+  return query
+}
+
+export interface ReviewMutationPayload {
+  action: ReviewAction
+  note?: string
+}
+
+export function useLeadsQuery() {
+  const query = useQuery<LeadRead[], Error>({
+    queryKey: ['leads'],
+    queryFn: () => request<LeadRead[]>('/api/leads'),
+    placeholderData: keepPreviousData,
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  useVisiblePolling(query, () =>
+    autoRefreshEnabled.value && documentVisible.value ? IDLE_POLL_INTERVAL : false,
+  )
+  return query
+}
+
+export function useReviewsQuery() {
+  return useQuery<ResourceReview[], Error>({
+    queryKey: ['reviews'],
+    queryFn: () => request<ResourceReview[]>('/api/reviews'),
+    placeholderData: keepPreviousData,
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useReviewMutation(resourceId: MaybeRefOrGetter<string>) {
+  const queryClient = useQueryClient()
+  return useMutation<ReviewRead, Error, ReviewMutationPayload>({
+    mutationFn: (payload) => {
+      const id = toValue(resourceId)
+      return request<ReviewRead>(`/api/resources/${encodeURIComponent(id)}/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: payload.action, note: payload.note ?? '' }),
+      })
+    },
+    retry: false,
+    onSuccess: (result) => {
+      const id = toValue(resourceId)
+      queryClient.setQueryData<ResourceDetailRead>(['resources', 'detail', id], (previous) =>
+        previous ? { ...previous, review: result.review, actions: result.actions } : previous,
+      )
+      void queryClient.invalidateQueries({ queryKey: ['app'], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['leads'], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['reviews'], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['resources'] })
+      void queryClient.invalidateQueries({ queryKey: ['resources', 'detail', id] })
+    },
+  })
+}
+
+export function useRecheckMutation(resourceId: MaybeRefOrGetter<string>) {
+  const queryClient = useQueryClient()
+  return useMutation<RunRead, Error, void>({
+    mutationFn: () => {
+      const id = toValue(resourceId)
+      return request<RunRead>(`/api/resources/${encodeURIComponent(id)}/recheck`, {
+        method: 'POST',
+      })
+    },
+    retry: false,
+    onSuccess: (run) => {
+      const id = toValue(resourceId)
+      queryClient.setQueryData<TaskDetailRead>(['tasks', 'detail', run.id], { run, changes: [] })
+      void queryClient.invalidateQueries({ queryKey: ['tasks', 'detail', run.id] })
+      void queryClient.invalidateQueries({ queryKey: ['app'], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['tasks'], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['leads'], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['reviews'], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['resources'] })
+      void queryClient.invalidateQueries({ queryKey: ['resources', 'detail', id] })
+    },
+  })
+}
+
+export function useResourcesQuery(filters: MaybeRefOrGetter<ResourceFilters>) {
+  const snapshot = computed<ResourceFilters>(() => filterSnapshot(toValue(filters)))
+  return useQuery<Resource[], Error>({
+    queryKey: computed(() => ['resources', snapshot.value] as const),
+    queryFn: () => request<Resource[]>(resourcesPath(snapshot.value)),
+    placeholderData: keepPreviousData,
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useResourceQuery(id: MaybeRefOrGetter<string>) {
+  return useQuery<ResourceDetailRead, Error>({
+    queryKey: computed(() => ['resources', 'detail', toValue(id)] as const),
+    queryFn: () => request<ResourceDetailRead>(`/api/resources/${encodeURIComponent(toValue(id))}`),
+    enabled: computed(() => Boolean(toValue(id))),
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useTasksQuery(options: { sync?: boolean } = {}) {
+  const query = useQuery<RunRead[], Error>({
+    queryKey: ['tasks'],
+    queryFn: () => request<RunRead[]>('/api/tasks'),
+    placeholderData: keepPreviousData,
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  if (options.sync) {
+    useVisiblePolling(query, () => {
+      if (!autoRefreshEnabled.value || !documentVisible.value) return false
+      return query.data.value?.some((run) => run.status === 'running')
+        ? RUNNING_POLL_INTERVAL
+        : IDLE_POLL_INTERVAL
+    })
+  }
+  return query
+}
+
+export function useTaskQuery(id: MaybeRefOrGetter<string>) {
+  const query = useQuery<TaskDetailRead, Error>({
+    queryKey: computed(() => ['tasks', 'detail', toValue(id)] as const),
+    queryFn: () => request<TaskDetailRead>(`/api/tasks/${encodeURIComponent(toValue(id))}`),
+    enabled: computed(() => Boolean(toValue(id))),
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  useVisiblePolling(query, () => {
+    if (!autoRefreshEnabled.value || !documentVisible.value) return false
+    return query.data.value?.run.status === 'running' ? RUNNING_POLL_INTERVAL : false
+  })
+  return query
+}
+
+export function useBriefingsQuery() {
+  return useQuery<RunRead[], Error>({
+    queryKey: ['briefings'],
+    queryFn: () => request<RunRead[]>('/api/briefings'),
+    placeholderData: keepPreviousData,
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useBriefingQuery(id: MaybeRefOrGetter<string>) {
+  return useQuery<BriefingRead, Error>({
+    queryKey: computed(() => ['briefings', 'detail', toValue(id)] as const),
+    queryFn: () => request<BriefingRead>(`/api/briefings/${encodeURIComponent(toValue(id))}`),
+    enabled: computed(() => Boolean(toValue(id))),
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useStartTaskMutation() {
+  const queryClient = useQueryClient()
+  return useMutation<RunRead, Error, CreateTaskRequest>({
+    mutationFn: (payload) =>
+      request<RunRead>('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }),
+    retry: false,
+    onSuccess: (run) => {
+      queryClient.setQueryData<TaskDetailRead>(['tasks', 'detail', run.id], { run, changes: [] })
+      void queryClient.invalidateQueries({ queryKey: ['tasks', 'detail', run.id] })
+      void queryClient.invalidateQueries({ queryKey: ['app'], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['tasks'], exact: true })
+    },
+  })
+}
+
+export function useSettingsQuery() {
+  return useQuery<SettingsRead, Error>({
+    queryKey: ['settings'],
+    queryFn: () => request<SettingsRead>('/api/settings'),
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useSaveSettingsMutation() {
+  const queryClient = useQueryClient()
+  return useMutation<SettingsRead, Error, SettingsPatchRequest>({
+    mutationFn: (payload) =>
+      request<SettingsRead>('/api/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }),
+    retry: false,
+    onSuccess: (settings) => {
+      queryClient.setQueryData<SettingsRead>(['settings'], settings)
+      void queryClient.invalidateQueries({ queryKey: ['app'], exact: true })
+    },
+  })
+}
+
+export function useResetSettingsMutation() {
+  const queryClient = useQueryClient()
+  return useMutation<SettingsRead, Error, SettingsResetRequest>({
+    mutationFn: (payload) =>
+      request<SettingsRead>('/api/settings/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }),
+    retry: false,
+    onSuccess: (settings) => {
+      queryClient.setQueryData<SettingsRead>(['settings'], settings)
+      void queryClient.invalidateQueries({ queryKey: ['app'], exact: true })
+    },
+  })
+}
+
+export function useTestSettingsMutation() {
+  return useMutation<SettingsTestRead, Error, SettingsTestRequest>({
+    mutationFn: (payload) =>
+      request<SettingsTestRead>('/api/settings/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }),
+    retry: false,
+  })
+}

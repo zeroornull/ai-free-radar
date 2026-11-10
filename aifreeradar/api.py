@@ -1,0 +1,488 @@
+"""Same-origin JSON API; importing the router never constructs application services."""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Sequence
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+from typing import cast
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, JsonValue, ValidationError
+
+from .api_models import (
+    ApiError,
+    AppRead,
+    BriefingRead,
+    CreateTaskRequest,
+    LeadRead,
+    ResourceDetailRead,
+    ReviewRead,
+    ReviewRequest,
+    RunRead,
+    SettingFieldRead,
+    SettingsPatchRequest,
+    SettingsRead,
+    SettingsResetRequest,
+    SettingsTestRead,
+    SettingsTestRequest,
+    TaskDetailRead,
+)
+from .config import ConfigurationError, Settings
+from .models import (
+    CATEGORY_LABELS,
+    CHECK_STATUS_LABELS,
+    CHINA_POLICY_LABELS,
+    FREE_TYPE_LABELS,
+    REVIEW_STATE_LABELS,
+    RUN_STATUS_LABELS,
+    STATUS_LABELS,
+    TRIGGER_LABELS,
+    CheckStatus,
+    Resource,
+    ResourceReview,
+    ResourceStatus,
+    ReviewState,
+    Run,
+    Scope,
+)
+from .probes import SettingsProbeError, probe_model, probe_search
+from .service import BusyError
+from .settings_store import (
+    SettingsConflictError,
+    SettingsSecretUnavailableError,
+    SettingsStore,
+    SettingsWriteError,
+)
+from .storage import UnknownResource
+from .web_content import redact_json, redact_text, render_markdown
+
+try:
+    APP_VERSION = version("aifreeradar")
+except PackageNotFoundError:
+    APP_VERSION = "0.1.0"
+
+CATEGORIES = CATEGORY_LABELS
+RESOURCE_STATUSES = STATUS_LABELS
+CHINA_POLICIES = CHINA_POLICY_LABELS
+LABELS = {
+    **CATEGORY_LABELS,
+    **STATUS_LABELS,
+    **CHECK_STATUS_LABELS,
+    **FREE_TYPE_LABELS,
+    **CHINA_POLICY_LABELS,
+    **RUN_STATUS_LABELS,
+    **TRIGGER_LABELS,
+    "global": "全球资源",
+    "china": "中国大陆政策研究",
+    "official": "官方依据",
+    "community": "社区线索",
+    "new": "新增",
+    "changed": "重要变化",
+    "restored": "恢复",
+}
+TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
+INVALID_INPUT = "研究范围或筛选条件无效，请检查输入后重试。"
+TASK_NOT_FOUND = "未找到这项任务。请返回任务历史选择已有任务。"
+RESOURCE_NOT_FOUND = "未找到此资源。请返回资源库选择已有资源。"
+IGNORED_RECHECK = "该资源已标记忽略，请先恢复处理后再重查。"
+BUSY_MESSAGE = "已有研究任务运行中，当前无法发起另一项任务。查看运行中的任务，完成后再试。"
+SETTINGS_CONFLICT = "配置已被其他页面修改，请刷新后重试。"
+SETTINGS_SECRET_UNAVAILABLE = "服务端未配置 AIFREERADAR_SECRET_KEY，无法保存密钥。"
+SETTINGS_PROBE_FAILED = "设置探测失败，请检查配置后重试。"
+
+router = APIRouter(prefix="/api")
+
+
+def briefing_file(data_dir: Path, task_id: str) -> Path:
+    """Resolve a report by task identity, never by a saved database path."""
+    if not TASK_ID.fullmatch(task_id):
+        raise HTTPException(status_code=404, detail="简报文件不存在。")
+    briefings_dir = (data_dir / "briefings").resolve()
+    candidate = (briefings_dir / f"{task_id}.md").resolve()
+    if candidate.parent != briefings_dir or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="此任务尚无简报文件。请查看任务状态。")
+    return candidate
+
+
+def run_read(run: Run, data_dir: Path) -> RunRead:
+    try:
+        briefing_file(data_dir, run.id)
+        has_briefing = True
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        has_briefing = False
+    return RunRead(
+        id=run.id,
+        trigger=run.trigger,
+        scope=run.scope,
+        status=run.status,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        error=run.error,
+        notes=run.notes,
+        schedule_day=run.schedule_day,
+        stats=run.stats,
+        has_briefing=has_briefing,
+    )
+
+
+def json_response(
+    value: BaseModel | Sequence[BaseModel], settings: Settings, *, status_code: int = 200
+) -> JSONResponse:
+    payload = (
+        value.model_dump(mode="json")
+        if isinstance(value, BaseModel)
+        else [item.model_dump(mode="json") for item in value]
+    )
+    return JSONResponse(redact_json(cast(JsonValue, payload), settings), status_code=status_code)
+
+
+def error_response(
+    settings: Settings, detail: str, status_code: int, *, headers: dict[str, str] | None = None
+) -> JSONResponse:
+    response = json_response(ApiError(detail=detail), settings, status_code=status_code)
+    if headers:
+        response.headers.update(headers)
+    return response
+
+
+def settings_read(store: SettingsStore) -> SettingsRead:
+    version, fields = store.describe()
+    return SettingsRead(
+        version=version,
+        fields={
+            name: SettingFieldRead.model_validate(field)
+            for name, field in fields.items()
+        },
+    )
+
+
+def apply_settings(request: Request, current: Settings) -> None:
+    previous = request.app.state.settings
+    request.app.state.settings = current
+    request.app.state.scheduler.on_settings_changed(previous, current)
+
+
+def _known_run(request: Request, task_id: str) -> Run:
+    run = request.app.state.repository.get_run(task_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=TASK_NOT_FOUND)
+    return run
+
+
+def open_leads(repository) -> list[tuple[Resource, ResourceReview]]:
+    """Pending or unverified records whose human review is still open."""
+    resources = repository.list_resources()
+    reviews = repository.reviews()
+    leads: list[tuple[Resource, ResourceReview]] = []
+    for resource in resources:
+        review = reviews.get(resource.id) or ResourceReview(resource_id=resource.id)
+        if review.state != ReviewState.OPEN:
+            continue
+        if (
+            resource.status == ResourceStatus.PENDING
+            or resource.check_status != CheckStatus.SUCCESS
+        ):
+            leads.append((resource, review))
+    return leads
+
+
+@router.get("/app", response_model=AppRead)
+async def app_info(request: Request):
+    settings = request.app.state.settings
+    active = request.app.state.manager.active
+    return json_response(
+        AppRead(
+            version=APP_VERSION,
+            default_scope=settings.default_scope,
+            schedule_enabled=settings.schedule_enabled,
+            schedule_time=settings.schedule_time,
+            active_run=run_read(active, settings.data_dir) if active is not None else None,
+            categories=CATEGORIES,
+            resource_statuses=RESOURCE_STATUSES,
+            china_policies=CHINA_POLICIES,
+            review_states=REVIEW_STATE_LABELS,
+            open_leads=len(open_leads(request.app.state.repository)),
+            labels=LABELS,
+        ),
+        settings,
+    )
+
+
+@router.get("/settings", response_model=SettingsRead)
+async def read_settings(request: Request):
+    settings = request.app.state.settings
+    return json_response(settings_read(request.app.state.settings_store), settings)
+
+
+@router.patch(
+    "/settings",
+    response_model=SettingsRead,
+    responses={
+        409: {"model": ApiError},
+        422: {"model": ApiError},
+        503: {"model": ApiError},
+    },
+)
+async def update_settings(request: Request, body: SettingsPatchRequest):
+    settings = request.app.state.settings
+    try:
+        current = request.app.state.settings_store.update(
+            dict(body.values), dict(body.secrets), body.version
+        )
+    except SettingsConflictError as exc:
+        raise HTTPException(status_code=409, detail=SETTINGS_CONFLICT) from exc
+    except SettingsSecretUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=SETTINGS_SECRET_UNAVAILABLE) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="配置值无效，请检查后重试。") from exc
+    except (SettingsWriteError, ConfigurationError) as exc:
+        raise HTTPException(status_code=422, detail=redact_text(str(exc), settings)) from exc
+    apply_settings(request, current)
+    return json_response(
+        settings_read(request.app.state.settings_store), request.app.state.settings
+    )
+
+
+@router.post(
+    "/settings/reset",
+    response_model=SettingsRead,
+    responses={
+        409: {"model": ApiError},
+        422: {"model": ApiError},
+        503: {"model": ApiError},
+    },
+)
+async def reset_settings(request: Request, body: SettingsResetRequest):
+    settings = request.app.state.settings
+    try:
+        current = request.app.state.settings_store.reset(body.keys, body.version)
+    except SettingsConflictError as exc:
+        raise HTTPException(status_code=409, detail=SETTINGS_CONFLICT) from exc
+    except SettingsSecretUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=SETTINGS_SECRET_UNAVAILABLE) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="配置值无效，请检查后重试。") from exc
+    except (SettingsWriteError, ConfigurationError) as exc:
+        raise HTTPException(status_code=422, detail=redact_text(str(exc), settings)) from exc
+    apply_settings(request, current)
+    return json_response(
+        settings_read(request.app.state.settings_store), request.app.state.settings
+    )
+
+
+@router.post(
+    "/settings/test",
+    response_model=SettingsTestRead,
+    responses={422: {"model": ApiError}, 502: {"model": ApiError}},
+)
+async def test_settings(request: Request, body: SettingsTestRequest):
+    settings = request.app.state.settings
+    try:
+        detail = (
+            await probe_model(settings)
+            if body.target == "model"
+            else await probe_search(settings)
+        )
+    except ConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=redact_text(str(exc), settings)) from exc
+    except SettingsProbeError as exc:
+        raise HTTPException(status_code=502, detail=redact_text(str(exc), settings)) from exc
+    except Exception:  # noqa: BLE001 - probe transport failures must not leak details
+        raise HTTPException(status_code=502, detail=SETTINGS_PROBE_FAILED) from None
+    return json_response(SettingsTestRead(ok=True, detail=detail), settings)
+
+
+@router.get("/leads", response_model=list[LeadRead])
+async def leads(request: Request):
+    settings = request.app.state.settings
+    records = open_leads(request.app.state.repository)
+    # Pending records first; within each group the most recently checked leads.
+    records.sort(
+        key=lambda item: (
+            item[0].status != ResourceStatus.PENDING,
+            -item[0].last_checked_at.timestamp(),
+        )
+    )
+    return json_response(
+        [LeadRead(resource=resource, review=review) for resource, review in records],
+        settings,
+    )
+
+
+@router.get("/resources", response_model=list[Resource], responses={422: {"model": ApiError}})
+async def resources(
+    request: Request, category: str = "", china_policy: str = "", status: str = ""
+):
+    if (
+        (category and category not in CATEGORIES)
+        or (china_policy and china_policy not in CHINA_POLICIES)
+        or (status and status not in RESOURCE_STATUSES)
+    ):
+        raise HTTPException(status_code=422, detail=INVALID_INPUT)
+    records = request.app.state.repository.list_resources(
+        category=category or None, china_policy=china_policy or None, status=status or None
+    )
+    return json_response(records, request.app.state.settings)
+
+
+@router.get(
+    "/resources/{resource_id}",
+    response_model=ResourceDetailRead,
+    responses={404: {"model": ApiError}, 422: {"model": ApiError}},
+)
+async def resource_detail(request: Request, resource_id: str):
+    repository = request.app.state.repository
+    resource = repository.get_resource(resource_id)
+    if resource is None:
+        raise HTTPException(status_code=404, detail="未找到此资源。请返回资源库选择已有资源。")
+    return json_response(
+        ResourceDetailRead(
+            resource=resource,
+            history=repository.history(resource_id),
+            review=repository.review(resource_id),
+            actions=repository.actions(resource_id),
+        ),
+        request.app.state.settings,
+    )
+
+
+@router.get("/reviews", response_model=list[ResourceReview])
+async def reviews(request: Request):
+    settings = request.app.state.settings
+    return json_response(list(request.app.state.repository.reviews().values()), settings)
+
+
+@router.post(
+    "/resources/{resource_id}/review",
+    response_model=ReviewRead,
+    responses={404: {"model": ApiError}, 422: {"model": ApiError}},
+)
+async def review_resource(request: Request, resource_id: str, body: ReviewRequest):
+    repository = request.app.state.repository
+    if len(body.note.strip()) > 2000:
+        raise HTTPException(status_code=422, detail=INVALID_INPUT)
+    try:
+        review, _ = repository.apply_review(resource_id, body.action, note=body.note)
+    except UnknownResource as exc:
+        raise HTTPException(status_code=404, detail=RESOURCE_NOT_FOUND) from exc
+    return json_response(
+        ReviewRead(review=review, actions=repository.actions(resource_id)),
+        request.app.state.settings,
+    )
+
+
+@router.post(
+    "/resources/{resource_id}/recheck",
+    status_code=202,
+    response_model=RunRead,
+    responses={404: {"model": ApiError}, 409: {"model": ApiError}},
+)
+async def recheck_resource(request: Request, resource_id: str):
+    settings = request.app.state.settings
+    repository = request.app.state.repository
+    resource = repository.get_resource(resource_id)
+    if resource is None:
+        raise HTTPException(status_code=404, detail=RESOURCE_NOT_FOUND)
+    if repository.review(resource_id).state == ReviewState.IGNORED:
+        raise HTTPException(status_code=409, detail=IGNORED_RECHECK)
+    scope = Scope(categories=[resource.category], region="global", resource_ids=[resource.id])
+    try:
+        run = await request.app.state.manager.start(scope, trigger="manual")
+    except BusyError as exc:
+        raise HTTPException(status_code=409, detail=BUSY_MESSAGE) from exc
+    return json_response(run_read(run, settings.data_dir), settings, status_code=202)
+
+
+@router.get("/tasks", response_model=list[RunRead])
+async def tasks(request: Request):
+    settings = request.app.state.settings
+    return json_response(
+        [run_read(run, settings.data_dir) for run in request.app.state.repository.list_runs()],
+        settings,
+    )
+
+
+@router.post(
+    "/tasks",
+    status_code=202,
+    response_model=RunRead,
+    responses={409: {"model": ApiError}, 422: {"model": ApiError}},
+)
+async def start_task(request: Request, body: CreateTaskRequest):
+    settings = request.app.state.settings
+    scope = Scope(categories=body.categories, region=body.region)
+    try:
+        run = await request.app.state.manager.start(scope, trigger="manual")
+    except BusyError as exc:
+        raise HTTPException(status_code=409, detail=BUSY_MESSAGE) from exc
+    return json_response(run_read(run, settings.data_dir), settings, status_code=202)
+
+
+@router.get(
+    "/tasks/{task_id}",
+    response_model=TaskDetailRead,
+    responses={404: {"model": ApiError}, 422: {"model": ApiError}},
+)
+async def task_detail(request: Request, task_id: str):
+    run = _known_run(request, task_id)
+    settings = request.app.state.settings
+    return json_response(
+        TaskDetailRead(
+            run=run_read(run, settings.data_dir),
+            changes=request.app.state.repository.get_changes(task_id),
+        ),
+        settings,
+    )
+
+
+@router.get("/briefings", response_model=list[RunRead])
+async def briefings(request: Request):
+    settings = request.app.state.settings
+    runs = [run_read(run, settings.data_dir) for run in request.app.state.repository.list_runs()]
+    return json_response([run for run in runs if run.has_briefing], settings)
+
+
+@router.get(
+    "/briefings/{task_id}/download",
+    response_class=Response,
+    response_model=None,
+    responses={
+        200: {
+            "content": {"text/markdown": {"schema": {"type": "string"}}},
+            "headers": {"Content-Disposition": {"schema": {"type": "string"}}},
+        },
+        404: {"model": ApiError},
+        422: {"model": ApiError},
+    },
+)
+async def download_briefing(request: Request, task_id: str):
+    _known_run(request, task_id)
+    settings = request.app.state.settings
+    source = briefing_file(settings.data_dir, task_id).read_text(encoding="utf-8")
+    return Response(
+        redact_text(source, settings),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{task_id}.md"'},
+    )
+
+
+@router.get(
+    "/briefings/{task_id}",
+    response_model=BriefingRead,
+    responses={404: {"model": ApiError}, 422: {"model": ApiError}},
+)
+async def briefing_detail(request: Request, task_id: str):
+    run = _known_run(request, task_id)
+    settings = request.app.state.settings
+    source = briefing_file(settings.data_dir, task_id).read_text(encoding="utf-8")
+    # Redact structured data and Markdown independently, before HTML escaping.
+    payload = {
+        "run": redact_json(cast(JsonValue, run_read(run, settings.data_dir).model_dump(mode="json")), settings),
+        "html": render_markdown(redact_text(source, settings)),
+    }
+    return JSONResponse(payload)
