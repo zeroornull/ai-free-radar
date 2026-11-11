@@ -1,6 +1,9 @@
 import type { components } from './generated/schema'
 
 export type Resource = components['schemas']['Resource']
+export type MessageSource = components['schemas']['MessageSource']
+export type CollectedMessage = components['schemas']['CollectedMessage']
+export type NewsItem = components['schemas']['NewsItem']
 export type Change = components['schemas']['Change']
 export type Evidence = components['schemas']['Evidence']
 export type Scope = components['schemas']['Scope']

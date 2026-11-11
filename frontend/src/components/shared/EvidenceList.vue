@@ -24,5 +24,7 @@ const { data: app } = useAppQuery()
       </p>
     </li>
   </ul>
-  <p v-else class="muted">尚无来源记录；没有官方依据的结论不能作为正式推荐。</p>
+  <p v-else class="muted">
+    尚无核验来源。收集到的免费消息只有收集来源，不能替代官方依据，也不能作为已核验政策。
+  </p>
 </template>

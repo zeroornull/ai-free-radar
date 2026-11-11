@@ -51,7 +51,7 @@ def test_absent_direct_sources_keeps_other_defaults(tmp_path: Path) -> None:
     assert "direct_sources" not in document
     assert settings.direct_sources == {}
     assert settings.model == "openai:gpt-4.1-mini"
-    assert settings.port == 8765
+    assert settings.port == 18765
 
 
 def test_unknown_category_key_is_rejected(tmp_path: Path) -> None:

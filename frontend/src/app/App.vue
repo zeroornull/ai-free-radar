@@ -36,8 +36,10 @@ function recordCompletedTasks(runs: readonly RunRead[]): void {
   }
   knownStatuses = current
   if (finished.length === 0) return
-  completionMessage.value = `任务 ${finished.join('、')} 已完成，资源与简报已更新。`
+  completionMessage.value = `任务 ${finished.join('、')} 已完成，消息、资源与简报已更新。`
   void queryClient.invalidateQueries({ queryKey: ['resources'] })
+  void queryClient.invalidateQueries({ queryKey: ['messages'] })
+  void queryClient.invalidateQueries({ queryKey: ['leads'], exact: true })
   void queryClient.invalidateQueries({ queryKey: ['briefings'] })
   void queryClient.invalidateQueries({ queryKey: ['tasks', 'detail'] })
   void queryClient.invalidateQueries({ queryKey: ['app'], exact: true })

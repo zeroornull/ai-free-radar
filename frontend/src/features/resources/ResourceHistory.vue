@@ -16,7 +16,8 @@ function jsonText(value: unknown): string {
 
 <template>
   <section class="panel">
-    <h2>重要变化历史</h2>
+    <h2>已核验政策的变化历史</h2>
+    <p class="muted">只记录按需核验确认的新增、变化、失效与恢复；收集消息见上方消息动态。</p>
     <ol v-if="history.length" class="history-list">
       <li
         v-for="change in history"
@@ -36,6 +37,6 @@ function jsonText(value: unknown): string {
         <EvidenceList :items="change.evidence ?? []" />
       </li>
     </ol>
-    <p v-else class="muted">尚无新增、实质政策变化、失效或恢复记录。仅更新时间不会重复推荐。</p>
+    <p v-else class="muted">尚无已核验的新增、实质政策变化、失效或恢复记录。仅更新时间不会重复推荐。</p>
   </section>
 </template>

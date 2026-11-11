@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from filelock import FileLock, Timeout
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -89,11 +89,11 @@ def create_app(
         document = config_document or {}
     dev_origin = os.environ.get("AIFREERADAR_DEV_ORIGIN")
     if dev_origin is not None and dev_origin not in {
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
+        "http://127.0.0.1:15173",
+        "http://localhost:15173",
     }:
         raise ConfigurationError(
-            "AIFREERADAR_DEV_ORIGIN must be http://127.0.0.1:5173 or http://localhost:5173"
+            "AIFREERADAR_DEV_ORIGIN must be http://127.0.0.1:15173 or http://localhost:15173"
         )
     data_dir = Path(settings.data_dir).resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -230,7 +230,7 @@ def create_app(
 
     @app.get("/")
     async def index():
-        return RedirectResponse("/resources", status_code=303)
+        return app_entry(200)
 
     @app.get("/{full_path:path}", response_class=HTMLResponse)
     async def spa(request: Request):

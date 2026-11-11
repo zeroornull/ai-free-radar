@@ -2,23 +2,29 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from .legacy_sources import cached_sources, matching_sources, safe_source
 from .models import (
     UNKNOWN,
     Category,
     Change,
     CheckStatus,
     ChinaPolicy,
+    CollectedMessage,
     Evidence,
     FreeType,
     LeadDiscovery,
+    MessageSource,
+    NewsItem,
     Policy,
     ResearchBatch,
     Resource,
@@ -178,9 +184,10 @@ def validate_policy(policy: Policy, now: datetime) -> Policy:
     for field in ("quota", "quota_unit", "claim_conditions"):
         if not _known(getattr(result, field)):
             problems.append(f"{field} 未说明")
-    for field in ("payment_required", "payment_method_required"):
-        if getattr(result, field) is not False:
-            problems.append(f"{field} 为必须或未核实，未达到零支付门槛")
+    if result.payment_required is not False:
+        problems.append("payment_required 为必须或未核实，未达到免费门槛")
+    if result.payment_method_required is None:
+        problems.append("payment_method_required 未核实")
     if result.models:
         required.add("models")
     if _known(result.rate_limit):
@@ -212,6 +219,160 @@ def _valid_http(value: str) -> bool:
         )
     except ValueError:
         return False
+
+
+_FREE = re.compile(
+    r"\bfree\b|\bno charge\b|\bno cost\b|免费|赠送|赠额|零费用|零支付", re.IGNORECASE
+)
+_API = re.compile(r"\bapi\b|\bsdk\b|接口", re.IGNORECASE)
+_PAID = re.compile(
+    r"(?:must|required?\s+to|need\s+to)\s+(?:pay|purchase|buy|top[ -]?up|recharge)"
+    r"|(?:payment|purchase|top[ -]?up|recharge)\s+(?:is\s+)?required"
+    r"|(?:需|须|先|要求|必须)(?:要|先|进行)?(?:付费|付款|支付|购买|充值)"
+    r"|(?:付费|付款|充值)(?:才|后|前提).{0,6}?(?:能|可|才|使用|调用|获得)",
+    re.IGNORECASE,
+)
+_WEB_ONLY = re.compile(
+    r"(?:web|browser|chat)[ -]?only|no\s+api|api\s+(?:is\s+)?(?:not available|unavailable)"
+    r"|only\s+available\s+in\s+(?:the\s+)?(?:web|browser)"
+    r"|仅(?:限)?网页|仅(?:限)?聊天|不提供\s*API|无\s*API",
+    re.IGNORECASE,
+)
+_NOT_FREE = re.compile(
+    r"\b(?:not free|no free|paid only)\b|不免费|没有免费|付费(?:才能|后才)",
+    re.IGNORECASE,
+)
+_REOPENED = re.compile(
+    r"\b(?:restored|reopened|renewed|extended|available again|resumed)\b"
+    r"|恢复|重新开放|续期|延期|重新上架",
+    re.IGNORECASE,
+)
+MESSAGE_FACT_FIELDS = (
+    "free_type", "quota", "quota_unit", "refresh_cycle", "rate_limit",
+    "claim_conditions", "payment_required", "payment_method_required",
+    "expires_at", "expiry_notes", "region_restrictions", "china_policy", "models",
+)
+MESSAGE_BENEFIT_FIELDS = (
+    "quota", "quota_unit", "models", "refresh_cycle", "rate_limit", "claim_conditions",
+)
+
+# Additive machine-translation fields; never part of MESSAGE_FACT_FIELDS or
+# change detection. Empty means untranslated.
+MESSAGE_ZH_FIELDS = tuple(name for name in CollectedMessage.model_fields if name.endswith("_zh"))
+POLICY_ZH_FIELDS = tuple(name for name in Policy.model_fields if name.endswith("_zh"))
+
+
+def _strip_negations(text: str) -> str:
+    """Remove no-payment phrasing and card-binding requirements before paid checks."""
+    return re.sub(
+        r"\b(?:no|without)\s+(?:payment|purchase|top[ -]?up|recharge)(?:\s+required)?"
+        r"|(?:无需|不需要|不必|不用)(?:付费|付款|支付|购买|充值|绑定(?:银行卡|信用卡|支付方式))"
+        r"|(?:do(?:es)?\s+not|don't|doesn't)\s+(?:need\s+to|require)\s+"
+        r"(?:pay|payment|purchase|top[ -]?up|recharge)"
+        r"|(?:valid\s+)?payment\s+method\s+(?:is\s+)?required"
+        r"|\b402\s+payment\s+required\b"
+        r"|(?:require[sd]?\s+(?:a\s+)?valid\s+payment\s+method)"
+        r"|(?:须|需|要|必须)(?:绑定|添加|开通)(?:银行卡|信用卡|支付方式|付款方式)",
+        " ", text, flags=re.IGNORECASE,
+    )
+
+
+def message_problem(message: CollectedMessage) -> str:
+    """Collection boundary: explicit free API support, unknown terms allowed,
+    card binding allowed, actual purchase excluded."""
+    policy = message.policy
+    source_texts = [f"{item.title}\n{item.excerpt}" for item in message.sources]
+    excerpts = "\n".join(item.excerpt for item in message.sources)
+    text = "\n".join(source_texts)
+    free_ok = any(_FREE.search(source) for source in source_texts)
+    api_ok = (
+        any(_API.search(source) for source in source_texts)
+        or bool(_API.search(policy.service))
+        or _valid_http(policy.api_url)
+        or _valid_http(policy.docs_url)
+    )
+    if not (free_ok and api_ok):
+        return "来源未明确说明免费 API 机会"
+    if policy.payment_required is True:
+        return "来源说明需实际付款、购买或充值，非免费机会"
+    if _PAID.search(_strip_negations(text)):
+        return "来源说明需实际付款、购买或充值，非免费机会"
+    if _WEB_ONLY.search(excerpts) or _NOT_FREE.search(excerpts):
+        return "来源仅提供网页工具或需付费，未提供免费 API"
+    return ""
+
+
+def _legacy_summary(resource: Resource) -> str:
+    parts = []
+    if _known(resource.quota):
+        unit = f" {resource.quota_unit}" if _known(resource.quota_unit) else ""
+        parts.append(f"额度 {resource.quota}{unit}")
+    if _known(resource.refresh_cycle):
+        parts.append(resource.refresh_cycle)
+    if _known(resource.claim_conditions):
+        parts.append(resource.claim_conditions)
+    prefix = "历史来源记录"
+    return prefix + "：" + "；".join(parts) if parts else prefix + "，具体条件未说明"
+
+
+def _sourced_expiry(message: CollectedMessage) -> bool:
+    expiry = message.policy.expires_at
+    if expiry is None:
+        return False
+    text = " ".join(item.excerpt for item in message.sources)
+    dates = (
+        expiry.date().isoformat(),
+        f"{expiry.year}/{expiry.month}/{expiry.day}",
+        f"{expiry.year}年{expiry.month}月{expiry.day}日",
+        expiry.strftime("%B %d, %Y"),
+        expiry.strftime("%b %d, %Y"),
+    )
+    return any(date.casefold() in text.casefold() for date in dates)
+
+
+def _merge_sources(left: list[MessageSource], right: list[MessageSource]) -> list[MessageSource]:
+    merged = list(left)
+    keys = {
+        (item.url, item.source_type, item.access, " ".join(item.excerpt.split()))
+        for item in merged
+    }
+    for item in right:
+        key = (item.url, item.source_type, item.access, " ".join(item.excerpt.split()))
+        if key not in keys:
+            merged.append(item)
+            keys.add(key)
+    return merged
+
+
+def _merge_report(previous: CollectedMessage, incoming: CollectedMessage) -> CollectedMessage:
+    """Fill unknown incoming values with previously reported known details."""
+    values = incoming.policy.model_dump()
+    for field, old in previous.policy.model_dump().items():
+        value = values[field]
+        if value is None or value == [] or (isinstance(value, str) and not _known(value)):
+            values[field] = old
+    return incoming.model_copy(deep=True, update={
+        "policy": Policy.model_validate(values),
+        "published_at": incoming.published_at or previous.published_at,
+    })
+
+
+def _reported_value(field: str, value: Any) -> Any:
+    if field == "models":
+        items = sorted({str(item).strip() for item in value if str(item).strip()})
+        return items or None
+    if isinstance(value, str):
+        return value.strip() if _known(value) else None
+    return value
+
+
+def _message_facts(message: CollectedMessage) -> dict:
+    data = message.policy.model_dump(mode="json")
+    facts = {field: _reported_value(field, data[field]) for field in MESSAGE_FACT_FIELDS}
+    facts["ended"] = bool(message.ended)
+    if not any(facts[field] not in (None, []) for field in MESSAGE_BENEFIT_FIELDS):
+        facts["summary"] = " ".join(message.summary.split()).casefold()
+    return facts
 
 
 def _facts(resource: Policy) -> dict:
@@ -304,6 +465,26 @@ MIGRATIONS = (
     CREATE INDEX IF NOT EXISTS lead_discoveries_run
         ON lead_discoveries(run_id, discovered_at);
     """,
+    """
+    CREATE TABLE IF NOT EXISTS message_offers (
+        resource_id TEXT NOT NULL REFERENCES resources(id),
+        offer_key TEXT NOT NULL,
+        ended INTEGER NOT NULL,
+        payload TEXT NOT NULL,
+        PRIMARY KEY(resource_id, offer_key)
+    );
+    CREATE TABLE IF NOT EXISTS news_items (
+        id TEXT PRIMARY KEY,
+        resource_id TEXT NOT NULL REFERENCES resources(id),
+        offer_key TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        category TEXT NOT NULL,
+        discovered_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS news_items_resource ON news_items(resource_id, discovered_at);
+    CREATE INDEX IF NOT EXISTS news_items_task ON news_items(task_id, discovered_at);
+    """,
 )
 
 # Each action updates only what it names; state and favorites are independent.
@@ -353,6 +534,7 @@ class Repository:
         with self._connect() as connection:
             _migrate(connection)
             connection.execute("PRAGMA journal_mode=WAL")
+        self._backfill_messages()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -364,6 +546,472 @@ class Repository:
                 yield connection
         finally:
             connection.close()
+
+
+    @staticmethod
+    def _message_reports(connection: sqlite3.Connection) -> dict[str, list[CollectedMessage]]:
+        reports: dict[str, list[CollectedMessage]] = {}
+        for row in connection.execute("SELECT resource_id, payload FROM message_offers ORDER BY rowid"):
+            reports.setdefault(row["resource_id"], []).append(
+                CollectedMessage.model_validate_json(row["payload"])
+            )
+        return reports
+
+    @staticmethod
+    def _with_messages(resource: Resource, reports: dict[str, list[CollectedMessage]]) -> Resource:
+        resource.messages = reports.get(resource.id, resource.messages)
+        return resource
+
+    @staticmethod
+    def _save_offer(connection: sqlite3.Connection, resource_id: str, message: CollectedMessage) -> None:
+        connection.execute(
+            "INSERT INTO message_offers(resource_id, offer_key, ended, payload) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(resource_id, offer_key) DO UPDATE SET "
+            "ended=excluded.ended, payload=excluded.payload",
+            (resource_id, message.offer_key, int(message.ended), message.model_dump_json()),
+        )
+
+    @staticmethod
+    def _save_news(connection: sqlite3.Connection, event: NewsItem) -> None:
+        connection.execute(
+            "INSERT INTO news_items(id, resource_id, offer_key, task_id, category, discovered_at, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (event.id, event.resource_id, event.offer_key, event.task_id, event.policy.category,
+             event.discovered_at.isoformat(), event.model_dump_json()),
+        )
+
+    def _backfill_messages(self) -> None:
+        """Retry safe local recovery, including databases with the old v1 marker."""
+        self.recover_legacy_messages()
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO settings_meta(key, value) VALUES ('messages_backfilled_v2', '1') "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            )
+
+    def recover_legacy_messages(self) -> int:
+        """Restore missing reports from saved evidence/tool JSON; no network or model."""
+        resources = self.list_resources()
+        ignored = self.ignored_ids()
+        missing = [item for item in resources if not item.messages and item.id not in ignored]
+        if not missing:
+            return 0
+        cached = cached_sources(self.data_dir)
+        messages: list[CollectedMessage] = []
+        for resource in missing:
+            sources: list[MessageSource] = []
+            for evidence in resource.evidence:
+                try:
+                    source = MessageSource(
+                        url=evidence.url,
+                        excerpt=evidence.quote,
+                        source_type=evidence.source_type,
+                        access="snippet",
+                    )
+                except ValueError:
+                    continue
+                if safe_source(source):
+                    sources.append(source)
+            sources = _merge_sources(sources, matching_sources(resource, resources, cached))
+            if not sources:
+                continue
+            policy = Policy.model_validate(resource.model_dump(include=set(Policy.model_fields)))
+            policy.resource_id = resource.id
+            messages.append(CollectedMessage(
+                policy=policy,
+                title=f"{resource.provider} / {resource.service}",
+                summary=_legacy_summary(resource),
+                sources=sources,
+            ))
+        return len(self.import_legacy_messages(messages, None))
+
+    def import_legacy_messages(
+        self, messages: list[CollectedMessage], run: Run | None
+    ) -> list[NewsItem]:
+        """Fill existing identities only, preserving policy facts and original dates.
+
+        A transaction rechecks both review state and message presence so automatic
+        local recovery and an explicit backfill remain idempotent across processes.
+        """
+        events: list[NewsItem] = []
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for incoming in messages:
+                resource_id = incoming.policy.resource_id
+                if not resource_id:
+                    continue
+                row = connection.execute(
+                    "SELECT payload FROM resources WHERE id = ?", (resource_id,)
+                ).fetchone()
+                if row is None:
+                    continue
+                resource = Resource.model_validate_json(row[0])
+                if resource.messages or connection.execute(
+                    "SELECT 1 FROM message_offers WHERE resource_id = ?", (resource_id,)
+                ).fetchone():
+                    continue
+                if self._stored_review(
+                    connection, resource.id, resource.first_seen_at
+                ).state == ReviewState.IGNORED:
+                    continue
+                if (
+                    incoming.policy.category != resource.category
+                    or incoming.policy.provider_domain != resource.provider_domain
+                    or not _same_service(resource, incoming.policy)
+                    or (run is not None and not run.scope.includes(resource))
+                ):
+                    continue
+                sources = [source for source in incoming.sources if safe_source(source)]
+                if not sources:
+                    continue
+                report = incoming.model_copy(deep=True, update={"sources": sources})
+                if message_problem(report):
+                    continue
+                expired = resource.status == ResourceStatus.EXPIRED
+                if expired:
+                    report.ended = True
+                    report.end_reason = (
+                        resource.expiry_notes if _known(resource.expiry_notes)
+                        else "历史核验记录显示该免费权益已结束"
+                    )
+                else:
+                    reason = " ".join(report.end_reason.split())
+                    report.ended = bool(
+                        report.ended and reason
+                        and reason in " ".join(source.excerpt for source in sources)
+                    )
+                    report.end_reason = reason if report.ended else ""
+                event = NewsItem(
+                    **report.model_dump(),
+                    resource_id=resource.id,
+                    task_id=run.id if run is not None else resource.last_task_id,
+                    kind="expired" if report.ended else "new",
+                    discovered_at=resource.first_seen_at,
+                    first_seen_at=resource.first_seen_at,
+                )
+                self._save_offer(connection, resource.id, report)
+                self._save_news(connection, event)
+                resource.messages = [report]
+                self._save_resource(connection, resource)
+                events.append(event)
+        return events
+
+    def list_messages(
+        self,
+        category: Category | str | None = None,
+        include_ended: bool = False,
+        resource_id: str | None = None,
+        task_id: str | None = None,
+    ) -> list[NewsItem]:
+        conditions = ["COALESCE(r.state, '') != ?"]
+        arguments: list[object] = [str(ReviewState.IGNORED)]
+        if category is not None:
+            conditions.append("n.category = ?")
+            arguments.append(str(Category(str(category))))
+        if resource_id is not None:
+            conditions.append("n.resource_id = ?")
+            arguments.append(resource_id)
+        if task_id is not None:
+            conditions.append("n.task_id = ?")
+            arguments.append(task_id)
+        if not include_ended:
+            # Every event of an offer that is currently ended stays in history mode.
+            conditions.append("o.ended = 0")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT n.payload FROM news_items n "
+                "JOIN message_offers o ON o.resource_id=n.resource_id AND o.offer_key=n.offer_key "
+                "LEFT JOIN resource_reviews r ON r.resource_id=n.resource_id WHERE "
+                + " AND ".join(conditions)
+                + " ORDER BY n.discovered_at DESC, n.rowid DESC",
+                arguments,
+            ).fetchall()
+        return [NewsItem.model_validate_json(row[0]) for row in rows]
+
+    def apply_messages(self, batch: ResearchBatch, run: Run, now: datetime) -> list[NewsItem]:
+        """Persist collected reports as immutable news events.
+
+        Collection never rewrites verified policy facts, and only the report
+        channel of a resource. Explicit endings need a stated reason, and an
+        expiry must be present in a source excerpt.
+        """
+        now = aware_utc(now)
+        events: list[NewsItem] = []
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            reports = self._message_reports(connection)
+            resources = [
+                self._with_messages(Resource.model_validate_json(row[0]), reports)
+                for row in connection.execute("SELECT payload FROM resources ORDER BY rowid")
+            ]
+            for incoming in batch.messages:
+                policy = incoming.policy
+                if not run.scope.includes(policy):
+                    batch.failures.append(f"{policy.service}：消息超出本次范围，未写入")
+                    continue
+                try:
+                    # Category is part of collection identity: text and image
+                    # offers from one provider never coalesce into one resource.
+                    previous = self._match(
+                        policy,
+                        [item for item in resources if item.category == policy.category],
+                    )
+                except ValueError as error:
+                    batch.failures.append(f"{policy.service}：{error}")
+                    continue
+                if previous is not None:
+                    if not run.scope.includes(previous):
+                        batch.failures.append(f"{policy.service}：消息匹配到范围外资源，未写入")
+                        continue
+                    if self._stored_review(
+                        connection, previous.id, now
+                    ).state == ReviewState.IGNORED:
+                        continue
+                report = incoming.model_copy(deep=True)
+                old = (
+                    next(
+                        (
+                            item
+                            for item in previous.messages
+                            if item.offer_key == report.offer_key
+                        ),
+                        None,
+                    )
+                    if previous is not None
+                    else None
+                )
+                if old is not None:
+                    report = _merge_report(old, report)
+                problem = message_problem(report)
+                if problem:
+                    batch.notes.append(f"{policy.service}：{problem}，未收录")
+                    continue
+                # An ending needs a stated reason backed by a source excerpt;
+                # expiry needs the date present in a source excerpt.
+                reason = " ".join(report.end_reason.split())
+                excerpt_text = " ".join(item.excerpt for item in report.sources)
+                report.ended = bool(report.ended and reason and reason in excerpt_text)
+                if report.ended:
+                    report.end_reason = reason
+                expires_at = report.policy.expires_at
+                if (
+                    expires_at is not None
+                    and expires_at <= now
+                    and _sourced_expiry(report)
+                ):
+                    report.ended = True
+                    report.end_reason = report.end_reason or "来源明确截止日期已到期"
+                if old is not None:
+                    reopened = any(
+                        _REOPENED.search(source.excerpt) for source in incoming.sources
+                    )
+                    renewed = bool(
+                        incoming.policy.expires_at
+                        and incoming.policy.expires_at > now
+                        and _sourced_expiry(incoming)
+                    )
+                    if old.ended and not report.ended and not (reopened or renewed):
+                        # A repost without a reopening statement cannot resurrect an
+                        # explicitly ended campaign.
+                        report = report.model_copy(
+                            deep=True,
+                            update={"ended": True, "end_reason": old.end_reason},
+                        )
+                if not report.ended:
+                    # An open offer never carries a stale ending statement.
+                    report.end_reason = ""
+                report = report.model_copy(
+                    deep=True,
+                    update={
+                        "sources": _merge_sources(
+                            old.sources if old is not None else [], report.sources
+                        )
+                    },
+                )
+                current = previous or Resource(
+                    provider=policy.provider,
+                    service=policy.service,
+                    category=policy.category,
+                    provider_domain=policy.provider_domain,
+                    service_key=policy.service_key or _token(policy.service),
+                    aliases=policy.aliases,
+                    first_seen_at=now,
+                    last_checked_at=now,
+                )
+                if previous is None:
+                    # News rows reference the resource; claims stay out of verified fields.
+                    self._save_resource(connection, current)
+                latest = (
+                    connection.execute(
+                        "SELECT id, payload FROM news_items WHERE resource_id=? AND offer_key=? "
+                        "ORDER BY discovered_at DESC, rowid DESC LIMIT 1",
+                        (current.id, report.offer_key),
+                    ).fetchone()
+                    if old is not None
+                    else None
+                )
+                prior = (
+                    NewsItem.model_validate_json(latest["payload"]) if latest else None
+                )
+                changed = old is None or _message_facts(old) != _message_facts(report)
+                if changed:
+                    if report.ended:
+                        kind = "expired"
+                    elif old is None:
+                        kind = "new"
+                    else:
+                        kind = "restored" if old.ended else "changed"
+                    event = NewsItem(
+                        **report.model_dump(),
+                        resource_id=current.id,
+                        task_id=run.id,
+                        kind=kind,
+                        discovered_at=now,
+                        first_seen_at=prior.first_seen_at if prior else now,
+                    )
+                    self._save_news(connection, event)
+                    events.append(event)
+                elif (
+                    old is not None
+                    and prior is not None
+                    and old.sources != report.sources
+                    and latest is not None
+                ):
+                    # Source-only enrichment keeps the historical snapshot's event time.
+                    prior.sources = report.sources
+                    connection.execute(
+                        "UPDATE news_items SET payload=? WHERE id=?",
+                        (prior.model_dump_json(), latest["id"]),
+                    )
+                else:
+                    continue
+                self._save_offer(connection, current.id, report)
+                current.messages = [
+                    report if item.offer_key == report.offer_key else item
+                    for item in current.messages
+                ]
+                if not any(item.offer_key == report.offer_key for item in current.messages):
+                    current.messages = [*current.messages, report]
+                self._save_resource(connection, current)
+                resources = [item for item in resources if item.id != current.id] + [current]
+        return events
+
+    def translation_records(self) -> tuple[list[Resource], list[NewsItem]]:
+        """All stored resources with their offers, plus every news snapshot, for zh backfill."""
+        with self._connect() as connection:
+            reports = self._message_reports(connection)
+            resources = [
+                self._with_messages(Resource.model_validate_json(row[0]), reports)
+                for row in connection.execute(
+                    "SELECT r.payload FROM resources r "
+                    "LEFT JOIN resource_reviews v ON v.resource_id = r.id "
+                    "WHERE COALESCE(v.state, '') != ? ORDER BY r.rowid",
+                    (str(ReviewState.IGNORED),),
+                )
+            ]
+            rows = connection.execute(
+                "SELECT n.payload FROM news_items n "
+                "LEFT JOIN resource_reviews r ON r.resource_id = n.resource_id "
+                "WHERE COALESCE(r.state, '') != ? ORDER BY n.discovered_at, n.rowid",
+                (str(ReviewState.IGNORED),),
+            ).fetchall()
+        return resources, [NewsItem.model_validate_json(row[0]) for row in rows]
+
+    @staticmethod
+    def _merge_message_zh(
+        stored: CollectedMessage, translated: CollectedMessage
+    ) -> CollectedMessage:
+        """Overlay only *_zh fields; every other stored value stays untouched."""
+        policy = stored.policy.model_copy(
+            update={name: getattr(translated.policy, name) for name in POLICY_ZH_FIELDS}
+        )
+        return stored.model_copy(
+            update={
+                **{name: getattr(translated, name) for name in MESSAGE_ZH_FIELDS},
+                "policy": policy,
+            }
+        )
+
+    def save_message_translations(
+        self, resource_id: str, messages: list[CollectedMessage]
+    ) -> None:
+        """Persist zh-only updates into stored offers and the resource's embedded copies."""
+        if not messages:
+            return
+        by_key = {message.offer_key: message for message in messages}
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT offer_key, payload FROM message_offers WHERE resource_id = ?",
+                (resource_id,),
+            ).fetchall()
+            for row in rows:
+                translated = by_key.get(row["offer_key"])
+                if translated is None:
+                    continue
+                stored = CollectedMessage.model_validate_json(row["payload"])
+                merged = self._merge_message_zh(stored, translated)
+                if merged != stored:
+                    connection.execute(
+                        "UPDATE message_offers SET payload=? WHERE resource_id=? AND offer_key=?",
+                        (merged.model_dump_json(), resource_id, row["offer_key"]),
+                    )
+            row = connection.execute(
+                "SELECT payload FROM resources WHERE id = ?", (resource_id,)
+            ).fetchone()
+            if row is not None:
+                resource = Resource.model_validate_json(row["payload"])
+                embedded = [
+                    self._merge_message_zh(item, by_key[item.offer_key])
+                    if item.offer_key in by_key
+                    else item
+                    for item in resource.messages
+                ]
+                if embedded != resource.messages:
+                    self._save_resource(
+                        connection, resource.model_copy(update={"messages": embedded})
+                    )
+
+    def save_news_translations(self, events: list[NewsItem]) -> None:
+        """Persist zh-only updates into news snapshots, keeping event facts intact."""
+        if not events:
+            return
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for event in events:
+                row = connection.execute(
+                    "SELECT payload FROM news_items WHERE id = ?", (event.id,)
+                ).fetchone()
+                if row is None:
+                    continue
+                stored = NewsItem.model_validate_json(row["payload"])
+                merged = self._merge_message_zh(stored, event)
+                if merged != stored:
+                    connection.execute(
+                        "UPDATE news_items SET payload=? WHERE id=?",
+                        (merged.model_dump_json(), event.id),
+                    )
+
+    def save_resource_translations(self, resources: list[Resource]) -> None:
+        """Persist policy zh fields (failure_reason_zh) without touching other content."""
+        if not resources:
+            return
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for resource in resources:
+                row = connection.execute(
+                    "SELECT payload FROM resources WHERE id = ?", (resource.id,)
+                ).fetchone()
+                if row is None:
+                    continue
+                stored = Resource.model_validate_json(row["payload"])
+                updated = stored.model_copy(
+                    update={name: getattr(resource, name) for name in POLICY_ZH_FIELDS}
+                )
+                if updated != stored:
+                    self._save_resource(connection, updated)
+
+
 
     def settings_version(self) -> int:
         with self._connect() as connection:
@@ -444,14 +1092,19 @@ class Repository:
             sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY rowid"
         with self._connect() as connection:
+            reports = self._message_reports(connection)
             return [
-                Resource.model_validate_json(row[0]) for row in connection.execute(sql, arguments)
+                self._with_messages(Resource.model_validate_json(row[0]), reports)
+                for row in connection.execute(sql, arguments)
             ]
 
     def get_resource(self, id: str) -> Resource | None:
         with self._connect() as connection:
             row = connection.execute("SELECT payload FROM resources WHERE id = ?", (id,)).fetchone()
-            return Resource.model_validate_json(row[0]) if row else None
+            return (
+                self._with_messages(Resource.model_validate_json(row[0]), self._message_reports(connection))
+                if row else None
+            )
 
     def history(self, resource_id: str) -> list[Change]:
         return self._changes("resource_id", resource_id)
@@ -796,6 +1449,7 @@ class Repository:
                     last_task_id=run.id,
                     recommended_at=previous.recommended_at if previous else None,
                 )
+                current.messages = previous.messages if previous else []
                 kind = None
                 if previous is None:
                     kind = "expired" if current.status == ResourceStatus.EXPIRED else "new"

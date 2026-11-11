@@ -27,6 +27,7 @@ const draft = reactive<{ categories: CategoryValue[]; region: RegionValue }>({
   categories: [...(props.app.default_scope.categories ?? [])],
   region: props.app.default_scope.region,
 })
+const verifyIdsDraft = ref('')
 
 const fieldsetRef = ref<HTMLElement | null>(null)
 const formError = ref('')
@@ -40,19 +41,30 @@ const orderedCategories = computed(() => {
   return [...draft.categories].sort((a, b) => order.indexOf(a) - order.indexOf(b))
 })
 
+const verifyIds = computed(() => {
+  const seen = new Set<string>()
+  for (const raw of verifyIdsDraft.value.split(/[\s,，;；]+/)) {
+    const value = raw.trim()
+    if (value) seen.add(value)
+  }
+  return Array.from(seen)
+})
+
 const pending = computed(() => isPending.value)
 const activeRun = computed(() => props.app.active_run)
 const submitDisabled = computed(() => pending.value || activeRun.value !== null)
 
 const disabledReason = computed(() => {
-  if (pending.value) return '正在提交研究任务，请稍候。'
-  if (activeRun.value) return '已有研究任务运行中，完成后再发起下一项任务。'
+  if (pending.value) return '正在提交任务，请稍候。'
+  if (activeRun.value) return '已有任务运行中，完成后再发起下一项任务。'
   return ''
 })
 
 const serverError = computed(() => mutationError.value?.message ?? '')
 const displayError = computed(() => formError.value || serverError.value)
-const describedBy = computed(() => (displayError.value ? 'scope-help task-error' : 'scope-help'))
+const describedBy = computed(() =>
+  displayError.value ? 'scope-help verify-help task-error' : 'scope-help verify-help',
+)
 
 function clearErrors(): void {
   if (formError.value) formError.value = ''
@@ -103,6 +115,7 @@ async function submit(): Promise<void> {
     categories: orderedCategories.value,
     region: draft.region,
   }
+  if (verifyIds.value.length) payload.resource_ids = verifyIds.value
   try {
     const created: unknown = await mutateAsync(payload)
     const runId = extractRunId(created)
@@ -115,8 +128,12 @@ async function submit(): Promise<void> {
 
 <template>
   <section class="panel" aria-labelledby="start-task">
-    <h2 id="start-task">发起研究任务</h2>
-    <p id="scope-help">选择至少一个 API 类别。研究将发现新资源并复查范围内已有记录，不注册账号、不领取权益、不调用候选 API。</p>
+    <h2 id="start-task">发起收集任务</h2>
+    <p id="scope-help">
+      默认按类别收集新的免费消息与更新，并保留来源链接，不自动核验已有资源。
+      如需严格核验，请在下方填写资源标识；填写后本次只核验这些资源。
+      任务不注册账号、不领取权益、不调用候选 API。
+    </p>
     <div v-if="displayError" id="task-error" class="error-message" role="alert">
       <strong>任务未发起</strong>
       <p>{{ displayError }}</p>
@@ -156,11 +173,45 @@ async function submit(): Promise<void> {
           <NativeSelectOption value="global">{{ labelFor(app, 'global') }}</NativeSelectOption>
           <NativeSelectOption value="china">{{ labelFor(app, 'china') }}</NativeSelectOption>
         </NativeSelect>
-        <p id="region-help" class="form-note">中国大陆条件要求核查官方注册及使用政策；不等于网络连通测试。依据不明的资源保留为待核实。</p>
+        <p id="region-help" class="form-note">
+          中国大陆条件只按来源描述收集，并标注政策依据；不等于网络连通测试。依据不明的资源保留为未核验。
+        </p>
+      </div>
+      <div class="field">
+        <Label for="verify-ids">按需核验的资源标识（可选）</Label>
+        <textarea
+          id="verify-ids"
+          v-model="verifyIdsDraft"
+          name="resource_ids"
+          rows="2"
+          aria-describedby="verify-help"
+          placeholder="例如：res_abc123, res_def456"
+        />
+        <p id="verify-help" class="form-note">
+          留空则只收集消息，不自动核验已有资源。填写后本次仅对这些资源执行严格政策核验，且不会发现其他资源。
+        </p>
       </div>
       <p class="sr-only" role="status" aria-live="polite">{{ disabledReason }}</p>
-      <Button type="submit" class="h-11" :disabled="submitDisabled">{{ pending ? '正在提交…' : '发起本次研究' }}</Button>
+      <Button type="submit" class="h-11" :disabled="submitDisabled">
+        {{ pending ? '正在提交…' : verifyIds.length ? '发起按需核验' : '发起本次收集' }}
+      </Button>
       <p v-if="disabledReason" class="form-note">{{ disabledReason }}</p>
     </form>
   </section>
 </template>
+
+<style scoped>
+.verify-ids-input {
+  font: inherit;
+  font-size: 1rem;
+  inline-size: 100%;
+  min-block-size: 2.75rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--color-control-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  background-color: var(--color-bg-surface);
+  line-height: 1.55;
+  resize: vertical;
+}
+</style>

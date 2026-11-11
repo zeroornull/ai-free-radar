@@ -88,13 +88,15 @@ def test_official_zero_payment_policy_is_active_with_units_sources_and_times(rep
 
 
 @pytest.mark.parametrize("field", ["payment_required", "payment_method_required"])
-@pytest.mark.parametrize("value", [True, None], ids=["required", "unknown"])
-def test_paid_binding_or_unknown_payment_is_not_formal_recommendation(repository, field, value):
-    policy = official_policy(**{field: value})
-    run, changes = apply(repository, [policy], f"payment-{field}-{value}")
+def test_unknown_payment_flag_without_evidence_stays_pending(repository, field):
+    if field == "payment_required":
+        policy = official_policy(payment_required=None)
+    else:
+        policy = official_policy(payment_method_required=None)
+    run, changes = apply(repository, [policy], f"payment-{field}-unknown")
     (resource,) = repository.list_resources()
     assert resource.status == "pending"
-    assert getattr(resource, field) is value
+    assert getattr(resource, field) is None
     assert resource.recommended_at is None
     markdown = render_briefing(run, [resource], changes, [])
     assert resource.service in section(markdown, "待核实")
@@ -102,6 +104,29 @@ def test_paid_binding_or_unknown_payment_is_not_formal_recommendation(repository
         (block for block in re.split(r"(?m)^## ", markdown)[1:] if block.startswith("新发现")), ""
     )
     assert resource.service not in formal
+
+
+def test_binding_card_without_payment_is_formal_recommendation(repository):
+    policy = official_policy(payment_required=False, payment_method_required=True)
+    run, changes = apply(repository, [policy], "payment-card-required")
+    (resource,) = repository.list_resources()
+    assert resource.status == "active"
+    assert resource.payment_required is False
+    assert resource.payment_method_required is True
+    assert resource.recommended_at == BASE_TIME
+    markdown = render_briefing(run, [resource], changes, [])
+    assert resource.service in section(markdown, "新发现")
+
+
+def test_actual_payment_requirement_is_not_formal_recommendation(repository):
+    policy = official_policy(payment_required=True, payment_method_required=False)
+    run, changes = apply(repository, [policy], "payment-required")
+    (resource,) = repository.list_resources()
+    assert resource.status == "pending"
+    assert resource.payment_required is True
+    assert resource.recommended_at is None
+    markdown = render_briefing(run, [resource], changes, [])
+    assert resource.service in section(markdown, "待核实")
 
 
 @pytest.mark.parametrize("category", CATEGORIES)
@@ -226,11 +251,12 @@ def test_substantive_changes_keep_before_after_time_and_field_evidence(repositor
     assert any(item.field == field and item.checked_at == later for item in event.evidence)
     assert repository.get_changes(run.id) == changes
     assert repository.history(old.id)[-1] == event
-    if field.startswith("payment_"):
+    if field == "payment_required":
         assert current.status == "pending"
         assert current.recommended_at == old.recommended_at
     else:
         assert current.status == "active"
+        assert current.recommended_at == later
         markdown = render_briefing(run, [current], changes, [])
         assert current.service in section(markdown, "重要变化")
         assert next(item.url for item in event.evidence if item.field == field) in markdown
@@ -492,8 +518,16 @@ def test_reopening_database_retains_resources_runs_evidence_history_and_same_day
     del repository
 
     reopened = Repository(data_dir)
-    assert reopened.list_resources() == [current]
-    assert reopened.get_resource(current.id) == current
+    reopened_resources = reopened.list_resources()
+    assert len(reopened_resources) == 1
+    assert reopened_resources[0].model_dump(exclude={"messages"}) == current.model_dump(
+        exclude={"messages"}
+    )
+    reopened_current = reopened.get_resource(current.id)
+    assert reopened_current is not None
+    assert reopened_current.model_dump(exclude={"messages"}) == current.model_dump(
+        exclude={"messages"}
+    )
     assert reopened.get_resource("missing") is None
     assert reopened.history(current.id) == old_history
     assert len(old_history) == 2
@@ -604,11 +638,11 @@ def test_existing_v3_database_upgrades_in_place_and_reopens_as_noop(tmp_path):
 
     repository = Repository(data_dir)
     with repository._connect() as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == len(MIGRATIONS)
 
     reopened = Repository(data_dir)
     with reopened._connect() as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == len(MIGRATIONS)
     assert reopened.discoveries_for_run("missing") == []
 
 

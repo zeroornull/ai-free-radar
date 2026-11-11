@@ -10,6 +10,7 @@ from pydantic import Field, JsonValue
 from .models import (
     Category,
     Change,
+    NewsItem,
     Record,
     Resource,
     ResourceReview,
@@ -58,11 +59,13 @@ class ResourceDetailRead(Record):
     history: list[Change]
     review: ResourceReview
     actions: list[UserAction]
+    messages: list[NewsItem] = Field(default_factory=list)
 
 
 class TaskDetailRead(Record):
     run: RunRead
     changes: list[Change]
+    messages: list[NewsItem] = Field(default_factory=list)
 
 
 class BriefingRead(Record):

@@ -111,8 +111,14 @@ def test_legacy_database_upgrades_in_place_and_second_open_is_a_noop(tmp_path):
 
     upgraded = Repository(data_dir)
 
-    assert upgraded.list_resources() == [resource]
-    assert upgraded.get_resource(resource.id) == resource
+    upgraded_resource = upgraded.get_resource(resource.id)
+    assert upgraded_resource is not None
+    assert upgraded_resource.model_dump(exclude={"messages"}) == resource.model_dump(
+        exclude={"messages"}
+    )
+    (report,) = upgraded_resource.messages
+    assert report.sources[0].url == resource.evidence[0].url
+    assert report.sources[0].excerpt == resource.evidence[0].quote
     assert upgraded.reviews() == {}
     assert user_version(data_dir) == len(MIGRATIONS)
     assert {"resource_reviews", "user_actions"} <= names(data_dir, "table")
@@ -120,7 +126,9 @@ def test_legacy_database_upgrades_in_place_and_second_open_is_a_noop(tmp_path):
 
     reopened = Repository(data_dir)
 
-    assert reopened.list_resources() == [resource]
+    reopened_resource = reopened.get_resource(resource.id)
+    assert reopened_resource is not None
+    assert reopened_resource.model_dump() == upgraded_resource.model_dump()
     assert reopened.reviews() == {}
     assert user_version(data_dir) == len(MIGRATIONS)
 

@@ -7,6 +7,7 @@ import type {
   BriefingRead,
   CreateTaskRequest,
   LeadRead,
+  NewsItem,
   Resource,
   ResourceDetailRead,
   ResourceReview,
@@ -25,6 +26,12 @@ export interface ResourceFilters {
   category: string
   china_policy: string
   status: string
+  include_ended?: boolean
+}
+
+export interface MessageFilters {
+  category: string
+  include_ended?: boolean
 }
 
 const IDLE_POLL_INTERVAL = 5000
@@ -81,6 +88,7 @@ function filterSnapshot(filters: ResourceFilters): ResourceFilters {
     category: filters.category ?? '',
     china_policy: filters.china_policy ?? '',
     status: filters.status ?? '',
+    include_ended: filters.include_ended ?? false,
   }
 }
 
@@ -89,6 +97,7 @@ function resourcesPath(filters: ResourceFilters): string {
   if (filters.category) params.set('category', filters.category)
   if (filters.china_policy) params.set('china_policy', filters.china_policy)
   if (filters.status) params.set('status', filters.status)
+  if (filters.include_ended) params.set('include_ended', 'true')
   const search = params.toString()
   return search ? `/api/resources?${search}` : '/api/resources'
 }
@@ -161,6 +170,7 @@ export function useReviewMutation(resourceId: MaybeRefOrGetter<string>) {
       void queryClient.invalidateQueries({ queryKey: ['leads'], exact: true })
       void queryClient.invalidateQueries({ queryKey: ['reviews'], exact: true })
       void queryClient.invalidateQueries({ queryKey: ['resources'] })
+      void queryClient.invalidateQueries({ queryKey: ['messages'] })
       void queryClient.invalidateQueries({ queryKey: ['resources', 'detail', id] })
     },
   })
@@ -178,13 +188,14 @@ export function useRecheckMutation(resourceId: MaybeRefOrGetter<string>) {
     retry: false,
     onSuccess: (run) => {
       const id = toValue(resourceId)
-      queryClient.setQueryData<TaskDetailRead>(['tasks', 'detail', run.id], { run, changes: [] })
+      queryClient.setQueryData<TaskDetailRead>(['tasks', 'detail', run.id], { run, changes: [], messages: [] })
       void queryClient.invalidateQueries({ queryKey: ['tasks', 'detail', run.id] })
       void queryClient.invalidateQueries({ queryKey: ['app'], exact: true })
       void queryClient.invalidateQueries({ queryKey: ['tasks'], exact: true })
       void queryClient.invalidateQueries({ queryKey: ['leads'], exact: true })
       void queryClient.invalidateQueries({ queryKey: ['reviews'], exact: true })
       void queryClient.invalidateQueries({ queryKey: ['resources'] })
+      void queryClient.invalidateQueries({ queryKey: ['messages'] })
       void queryClient.invalidateQueries({ queryKey: ['resources', 'detail', id] })
     },
   })
@@ -195,6 +206,26 @@ export function useResourcesQuery(filters: MaybeRefOrGetter<ResourceFilters>) {
   return useQuery<Resource[], Error>({
     queryKey: computed(() => ['resources', snapshot.value] as const),
     queryFn: () => request<Resource[]>(resourcesPath(snapshot.value)),
+    placeholderData: keepPreviousData,
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useMessagesQuery(filters: MaybeRefOrGetter<MessageFilters>) {
+  const snapshot = computed(() => ({
+    category: toValue(filters).category ?? '',
+    include_ended: toValue(filters).include_ended ?? false,
+  }))
+  return useQuery<NewsItem[], Error>({
+    queryKey: computed(() => ['messages', snapshot.value] as const),
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (snapshot.value.category) params.set('category', snapshot.value.category)
+      if (snapshot.value.include_ended) params.set('include_ended', 'true')
+      const search = params.toString()
+      return request<NewsItem[]>(search ? `/api/messages?${search}` : '/api/messages')
+    },
     placeholderData: keepPreviousData,
     retry: false,
     refetchOnWindowFocus: false,
@@ -276,10 +307,47 @@ export function useStartTaskMutation() {
       }),
     retry: false,
     onSuccess: (run) => {
-      queryClient.setQueryData<TaskDetailRead>(['tasks', 'detail', run.id], { run, changes: [] })
+      queryClient.setQueryData<TaskDetailRead>(['tasks', 'detail', run.id], { run, changes: [], messages: [] })
       void queryClient.invalidateQueries({ queryKey: ['tasks', 'detail', run.id] })
       void queryClient.invalidateQueries({ queryKey: ['app'], exact: true })
       void queryClient.invalidateQueries({ queryKey: ['tasks'], exact: true })
+    },
+  })
+}
+
+export function useBackfillTranslationMutation() {
+  const queryClient = useQueryClient()
+  return useMutation<RunRead, Error, void>({
+    mutationFn: () =>
+      request<RunRead>('/api/translations/backfill', {
+        method: 'POST',
+      }),
+    retry: false,
+    onSuccess: (run) => {
+      queryClient.setQueryData<TaskDetailRead>(['tasks', 'detail', run.id], { run, changes: [], messages: [] })
+      void queryClient.invalidateQueries({ queryKey: ['tasks', 'detail', run.id] })
+      void queryClient.invalidateQueries({ queryKey: ['app'], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['tasks'], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['leads'], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['messages'] })
+      void queryClient.invalidateQueries({ queryKey: ['resources'] })
+    },
+  })
+}
+
+export function useBackfillMessagesMutation() {
+  const queryClient = useQueryClient()
+  return useMutation<RunRead, Error, void>({
+    mutationFn: () => request<RunRead>('/api/messages/backfill', { method: 'POST' }),
+    retry: false,
+    onSuccess: (run) => {
+      queryClient.setQueryData<TaskDetailRead>(['tasks', 'detail', run.id], { run, changes: [], messages: [] })
+      void queryClient.invalidateQueries({ queryKey: ['tasks', 'detail', run.id] })
+      void queryClient.invalidateQueries({ queryKey: ['app'], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['tasks'], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['leads'], exact: true })
+      void queryClient.invalidateQueries({ queryKey: ['messages'] })
+      void queryClient.invalidateQueries({ queryKey: ['resources'] })
     },
   })
 }

@@ -12,12 +12,26 @@ import threading
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+from aifreeradar.api_models import ResourceDetailRead, TaskDetailRead
 from aifreeradar.config import Settings
-from aifreeradar.models import Category, Evidence, Policy, ResearchBatch, Run, RunStats, Scope
+from aifreeradar.models import (
+    UNKNOWN,
+    Category,
+    CollectedMessage,
+    Evidence,
+    MessageSource,
+    Policy,
+    ResearchBatch,
+    ResourceStatus,
+    Run,
+    RunStats,
+    Scope,
+)
 from aifreeradar.storage import Repository
 from aifreeradar.web import create_app
 
@@ -135,6 +149,63 @@ def wait_idle(client, app):
     client.portal.call(app.state.manager.wait_idle)
 
 
+def reported_policy(service="Free Text API", category="text", **updates):
+    values: dict[str, Any] = {
+        "provider": "Example Provider",
+        "service": service,
+        "category": category,
+        "provider_domain": "example.com",
+        "service_key": service.casefold().replace(" ", "-"),
+    }
+    values.update(updates)
+    return Policy(**values)
+
+
+def collected_message(
+    service="Free Text API",
+    category="text",
+    *,
+    offer_key="default",
+    summary="Free API tier with 1000 monthly requests and no purchase required.",
+    url="https://example.com/free-api",
+    excerpt="Free tier: 1000 requests per month.",
+    ended=False,
+    end_reason="",
+    published_at=None,
+):
+    return CollectedMessage(
+        policy=reported_policy(service, category),
+        offer_key=offer_key,
+        title=f"{service} 免费接口",
+        summary=summary,
+        sources=[
+            MessageSource(
+                url=url,
+                title=f"{service} 官方页面",
+                excerpt=f"{excerpt} {end_reason}" if ended else excerpt,
+                source_type="official",
+                access="page",
+            )
+        ],
+        published_at=published_at,
+        ended=ended,
+        end_reason=end_reason,
+    )
+
+
+def collect(repository, *messages, when=CHECKED):
+    categories = list({message.policy.category for message in messages})
+    run = Run(
+        scope=Scope(categories=categories),
+        started_at=when,
+        status="success",
+        finished_at=when,
+    )
+    repository.save_run(run)
+    events = repository.apply_messages(ResearchBatch(messages=list(messages)), run, when)
+    return run, events
+
+
 def post_run(client, categories=("text",), region="global"):
     response = client.post("/api/tasks", json={"categories": list(categories), "region": region})
     assert response.status_code == 202, response.text
@@ -167,11 +238,16 @@ def test_resource_filters_cover_all_categories_policies_and_statuses_without_cha
          policy("Rerank API", "rerank"))
     resources = app.state.repository.list_resources()
     before = settings.default_scope.model_dump()
-    expected = [r.id for r in resources if all(str(getattr(r, key)) == value for key, value in filters.items())]
+    visible = [r for r in resources if r.status != ResourceStatus.EXPIRED]
     with TestClient(app) as client:
-        assert resource_ids(client.get("/api/resources", params=filters)) == expected
-        assert resource_ids(client.get("/api/resources")) == [r.id for r in resources]
-        assert resource_ids(client.get("/api/resources", params={"category": "", "status": "", "china_policy": ""})) == [r.id for r in resources]
+        for selected in (filters, {}):
+            bucket = resources if selected.get("status") == "expired" else visible
+            expected = [
+                r.id for r in bucket
+                if all(str(getattr(r, key)) == value for key, value in selected.items())
+            ]
+            assert resource_ids(client.get("/api/resources", params=selected)) == expected
+        assert resource_ids(client.get("/api/resources?include_ended=true")) == [r.id for r in resources]
     assert settings.default_scope.model_dump() == before
     assert researcher.calls == []
 
@@ -207,8 +283,6 @@ def test_manual_http_flow_repeated_categories_unique_downloads_and_restart(setti
     app = create_app(settings, researcher=researcher)
     defaults = settings.default_scope.model_dump()
     with TestClient(app) as client:
-        root = client.get("/", follow_redirects=False)
-        assert root.status_code == 303 and root.headers["location"] == "/resources"
         first_id = post_run(client, ("text", "image", "text"), "china")
         wait_idle(client, app)
         first = app.state.repository.get_run(first_id)
@@ -308,7 +382,7 @@ def test_invalid_manual_scope_does_not_start_research(settings, data):
 @pytest.mark.parametrize("headers,expected", [
     ({"host": "evil.example"}, {400, 403}), ({"host": "127.0.0.1.evil.example"}, {400, 403}),
     ({"origin": "https://evil.example"}, {403}), ({"origin": "null"}, {403}),
-    ({"origin": "http://testserver:8765"}, {403}), ({"sec-fetch-site": "cross-site"}, {403}),
+    ({"origin": "http://testserver:18765"}, {403}), ({"sec-fetch-site": "cross-site"}, {403}),
 ])
 def test_foreign_host_or_origin_cannot_trigger_research(settings, headers, expected):
     researcher = Researcher()
@@ -321,8 +395,8 @@ def test_foreign_host_or_origin_cannot_trigger_research(settings, headers, expec
 
 def test_same_origin_loopback_request_can_start_research(settings):
     app = create_app(settings, researcher=Researcher())
-    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
-        response = client.post("/api/tasks", json={"categories": ["text"]}, headers={"origin": "http://127.0.0.1:8765"})
+    with TestClient(app, base_url="http://127.0.0.1:18765") as client:
+        response = client.post("/api/tasks", json={"categories": ["text"]}, headers={"origin": "http://127.0.0.1:18765"})
         assert response.status_code == 202
         assert response.headers["referrer-policy"] == "same-origin"
         wait_idle(client, app)
@@ -461,15 +535,15 @@ def test_invalid_resource_filters_return_public_validation_error(settings, field
 
 
 @pytest.mark.parametrize("configured", [False, True])
-@pytest.mark.parametrize("origin", ["http://127.0.0.1:5173", "http://localhost:5173"])
+@pytest.mark.parametrize("origin", ["http://127.0.0.1:15173", "http://localhost:15173"])
 def test_dev_origin_requires_explicit_exact_configuration(settings, monkeypatch, configured, origin):
     monkeypatch.delenv("AIFREERADAR_DEV_ORIGIN", raising=False)
     if configured:
         monkeypatch.setenv("AIFREERADAR_DEV_ORIGIN", origin)
     researcher = Researcher()
     app = create_app(settings, researcher=researcher)
-    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
-        for rejected in ("null", "http://127.0.0.1:5174", "https://evil.example"):
+    with TestClient(app, base_url="http://127.0.0.1:18765") as client:
+        for rejected in ("null", "http://127.0.0.1:15174", "https://evil.example"):
             assert client.post("/api/tasks", json={"categories": ["text"]}, headers={"origin": rejected}).status_code == 403
         assert client.post("/api/tasks", json={"categories": ["text"]}, headers={"origin": origin, "sec-fetch-site": "cross-site"}).status_code == 403
         response = client.post("/api/tasks", json={"categories": ["text"]}, headers={"origin": origin})
@@ -479,7 +553,7 @@ def test_dev_origin_requires_explicit_exact_configuration(settings, monkeypatch,
         assert len(researcher.calls) == int(configured)
 
 
-@pytest.mark.parametrize("origin", ["", " ", "http://localhost:5174", "https://localhost:5173", "http://127.0.0.1:5173/"])
+@pytest.mark.parametrize("origin", ["", " ", "http://localhost:15174", "https://localhost:15173", "http://127.0.0.1:15173/"])
 def test_invalid_dev_origin_fails_configuration(settings, monkeypatch, origin):
     monkeypatch.setenv("AIFREERADAR_DEV_ORIGIN", origin)
     with pytest.raises(ValueError):
@@ -530,11 +604,160 @@ def test_recursive_presented_secrets_preserve_json_and_stored_facts(settings):
 def test_empty_api_collections_are_empty_without_starting_research(settings):
     researcher = Researcher()
     with TestClient(create_app(settings, researcher=researcher)) as client:
-        for route in ("/api/resources", "/api/tasks", "/api/briefings"):
+        for route in ("/api/resources", "/api/messages", "/api/tasks", "/api/briefings"):
             response = client.get(route)
             assert response.status_code == 200 and response.json() == []
         assert client.get("/api/app").json()["active_run"] is None
         assert researcher.calls == []
+
+
+# Phase B: collection-first message feed, resource history and run messages.
+
+LATER = CHECKED + timedelta(days=1)
+
+
+def test_message_feed_lists_current_offers_filters_category_and_rejects_invalid_input(settings):
+    app = create_app(settings, researcher=Researcher())
+    repository = app.state.repository
+    text = collected_message("Free Text API", "text")
+    image = collected_message("Free Image API", "image")
+    first, events = collect(repository, text, image)
+    ids_by_category = {event.policy.category.value: event.resource_id for event in events}
+    text_id = ids_by_category["text"]
+    image_id = ids_by_category["image"]
+    second, ended = collect(
+        repository,
+        collected_message(
+            "Free Text API",
+            "text",
+            ended=True,
+            end_reason="官方公告活动已停止",
+        ),
+        when=LATER,
+    )
+    assert {event.kind for event in ended} == {"expired"}
+    assert first.id != second.id
+    with TestClient(app) as client:
+        feed = client.get("/api/messages")
+        assert feed.status_code == 200
+        body = feed.json()
+        # The ended text offer is hidden by default; only the live image offer remains.
+        assert [item["kind"] for item in body] == ["new"]
+        assert [item["resource_id"] for item in body] == [image_id]
+        # Explicit history shows the newest expired event ahead of the two earlier news.
+        history = client.get("/api/messages?include_ended=true").json()
+        assert history[0]["kind"] == "expired" and history[0]["resource_id"] == text_id
+        assert {item["kind"] for item in history[1:]} == {"new"}
+        # Category filter narrows to the matching family, including expired history.
+        image_feed = client.get("/api/messages?category=image&include_ended=true").json()
+        assert [item["kind"] for item in image_feed] == ["new"]
+        assert [item["resource_id"] for item in image_feed] == [image_id]
+        invalid = client.get("/api/messages?category=bogus")
+        assert invalid.status_code == 422
+        assert invalid.json() == {"detail": "研究范围或筛选条件无效，请检查输入后重试。"}
+
+def test_resource_list_hides_all_ended_offers_but_history_and_expired_expose_them(settings):
+    app = create_app(settings, researcher=Researcher())
+    repository = app.state.repository
+    _, events = collect(repository, collected_message("Free Text API", "text"))
+    text_id = events[0].resource_id
+    collect(repository, collected_message("Free Image API", "image"))
+    _, live_events = collect(repository, collected_message("Free Video API", "video"))
+    live = {event.resource_id for event in live_events}
+    with TestClient(app) as client:
+        default = client.get("/api/resources").json()
+        assert text_id in {item["id"] for item in default}
+        assert live <= {item["id"] for item in default}
+        collect(
+            repository,
+            collected_message("Free Text API", "text", ended=True, end_reason="官方下线活动已结束"),
+            when=LATER,
+        )
+        hidden = client.get("/api/resources").json()
+        assert text_id not in {item["id"] for item in hidden}
+        assert live <= {item["id"] for item in hidden}
+        history = client.get("/api/resources?include_ended=true").json()
+        assert text_id in {item["id"] for item in history}
+        expired = client.get("/api/resources?status=expired").json()
+        assert text_id in {item["id"] for item in expired}
+        detail = client.get(f"/api/resources/{text_id}").json()
+        assert [item["kind"] for item in detail["messages"]] == ["expired", "new"]
+
+
+def test_task_detail_and_resource_detail_expose_that_runs_messages(settings):
+    app = create_app(settings, researcher=Researcher())
+    repository = app.state.repository
+    first, _first_events = collect(repository, collected_message("Free Text API", "text"))
+    second, second_events = collect(
+        repository,
+        collected_message("Free Text API", "text", ended=True, end_reason="官方公告活动结束"),
+        when=LATER,
+    )
+    resource_id = second_events[0].resource_id
+    with TestClient(app) as client:
+        task1 = client.get(f"/api/tasks/{first.id}").json()
+        task2 = client.get(f"/api/tasks/{second.id}").json()
+        assert [item["kind"] for item in task1["messages"]] == ["new"]
+        assert [item["kind"] for item in task2["messages"]] == ["expired"]
+        detail = client.get(f"/api/resources/{resource_id}").json()
+        assert [item["kind"] for item in detail["messages"]] == ["expired", "new"]
+        assert detail["resource"]["id"] == resource_id
+
+
+def test_legacy_strict_records_have_no_messages_on_detail_or_feed(settings):
+    app = create_app(settings, researcher=Researcher())
+    repository = app.state.repository
+    run = seed(repository, policy("Verified Text API", "text"))
+    resource_id = repository.list_resources()[0].id
+    with TestClient(app) as client:
+        assert client.get("/api/messages").json() == []
+        assert client.get("/api/messages?include_ended=true").json() == []
+        detail = client.get(f"/api/resources/{resource_id}").json()
+        assert detail["messages"] == []
+        task = client.get(f"/api/tasks/{run.id}").json()
+        assert task["messages"] == []
+        assert task["run"]["status"] == "success"
+
+
+def test_message_feed_redacts_configured_secrets_from_collected_sources(settings):
+    secret = "sk-live-1234567890"
+    settings.model_api_key = secret
+    app = create_app(settings, researcher=Researcher())
+    repository = app.state.repository
+    collect(
+        repository,
+        collected_message(
+            "Free Text API",
+            "text",
+            excerpt=f"Free tier: use {secret} to authenticate API calls.",
+            summary=f"Free tier requires none; sample key {secret} shown on the official page.",
+        ),
+    )
+    with TestClient(app) as client:
+        response = client.get("/api/messages")
+        assert response.status_code == 200
+        assert secret not in response.text
+        assert "[密钥已隐藏]" in response.text
+
+
+def test_app_labels_pending_and_active_and_feed_and_history_routes_in_openapi(settings):
+    app = create_app(settings, researcher=Researcher())
+    with TestClient(app) as client:
+        labels = client.get("/api/app").json()["labels"]
+        assert labels["pending"] == "未核验"
+        assert labels["active"] == "政策已核验"
+        schema = app.openapi()
+        assert "/api/messages" in schema["paths"]
+        resource_history = schema["paths"]["/api/resources"]["get"]["parameters"]
+        assert any(
+            param["name"] == "include_ended"
+            and param["in"] == "query"
+            and param["required"] is False
+            for param in resource_history
+        )
+        assert "MessageSource" in schema["components"]["schemas"]
+        assert "CollectedMessage" in schema["components"]["schemas"]
+        assert "NewsItem" in schema["components"]["schemas"]
 
 
 def test_export_openapi_has_no_configuration_or_data_side_effects(tmp_path):
@@ -587,11 +810,13 @@ def built_entry():
     return ENTRY.read_bytes()
 
 
-def test_root_redirects_to_the_resources_spa_route(settings):
+def test_root_serves_the_feed_spa_entry(settings):
+    entry = built_entry()
     with TestClient(create_app(settings, researcher=Researcher())) as client:
-        response = client.get("/", follow_redirects=False)
-        assert response.status_code == 303
-        assert response.headers["location"] == "/resources"
+        response = client.get("/")
+        assert response.status_code == 200
+        assert response.content == entry
+        assert response.headers["content-type"].split(";")[0].strip() == "text/html"
 
 
 def test_six_spa_deep_links_serve_the_built_entry_even_for_missing_entities(settings):
@@ -785,7 +1010,17 @@ def test_leads_filter_sort_default_review_and_open_leads_count(settings):
         policy("Pending Newer", status="pending", evidence=[]),
         when=CHECKED + timedelta(hours=3),
     )
-    expected = ["Pending Newer", "Pending Older", "Flaky API"]
+    seed(
+        repository,
+        policy("Collected Pending API", status="pending", evidence=[]),
+        when=CHECKED + timedelta(hours=1),
+    )
+    collect(
+        repository,
+        collected_message("Flaky API"),
+        collected_message("Collected Pending API"),
+    )
+    expected = ["Pending Newer", "Pending Older"]
     with TestClient(app) as client:
         leads = client.get("/api/leads")
         assert leads.status_code == 200
@@ -940,3 +1175,289 @@ def test_recheck_starts_single_resource_run_and_appears_in_openapi(settings):
             "/api/resources/{resource_id}/recheck",
         ):
             assert path in schema["paths"]
+
+
+def test_manual_task_preserves_explicit_resource_verification_scope(settings):
+    researcher = Researcher()
+    app = create_app(settings, researcher=researcher)
+    seed(app.state.repository, policy())
+    resource = app.state.repository.list_resources()[0]
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/tasks",
+            json={"categories": ["text"], "region": "china", "resource_ids": [resource.id]},
+        )
+        assert response.status_code == 202
+        assert response.json()["scope"]["resource_ids"] == [resource.id]
+        wait_idle(client, app)
+        assert researcher.calls[0][0].resource_ids == [resource.id]
+
+
+def test_detail_models_accept_backward_payloads_without_message_fields(settings):
+    app = create_app(settings, researcher=Researcher())
+    run = seed(app.state.repository, policy())
+    resource = app.state.repository.list_resources()[0]
+    with TestClient(app) as client:
+        task_payload = client.get(f"/api/tasks/{run.id}").json()
+        task_payload.pop("messages")
+        assert TaskDetailRead.model_validate(task_payload).messages == []
+        resource_payload = client.get(f"/api/resources/{resource.id}").json()
+        resource_payload.pop("messages")
+        resource_payload["resource"].pop("messages", None)
+        detail = ResourceDetailRead.model_validate(resource_payload)
+        assert detail.messages == []
+        assert detail.resource.messages == []
+
+
+# --- Additive zh translation through the HTTP surface ---
+
+class FixedTranslator:
+    """Deterministic stand-in for ModelTranslator in HTTP tests."""
+
+    def __init__(self) -> None:
+        self.batches: list[dict[str, str]] = []
+
+    async def translate(self, texts: dict[str, str]) -> dict[str, str]:
+        self.batches.append(dict(texts))
+        return {key: f"中文译文：{value}" for key, value in texts.items()}
+
+
+def install_translator(monkeypatch, translator):
+    monkeypatch.setattr("aifreeradar.translation.ModelTranslator", lambda settings: translator)
+
+
+def test_same_origin_translation_backfill_returns_202_and_persists_zh(settings, monkeypatch):
+    translator = FixedTranslator()
+    install_translator(monkeypatch, translator)
+    app = create_app(settings, researcher=Researcher())
+    repository = app.state.repository
+    seed(
+        repository,
+        policy(
+            "Pending Lead",
+            status="pending",
+            quota=UNKNOWN,
+            failure_reason="Official documentation does not state the free quota",
+        ),
+    )
+    message = collected_message("Free Text API", "text").model_copy(
+        update={"title": "Free Text API free tier announced"}
+    )
+    collect(repository, message)
+    stored_lead = next(item for item in repository.list_resources() if item.service == "Pending Lead")
+
+    with TestClient(app) as client:
+        response = client.post("/api/translations/backfill", headers={"origin": "http://testserver"})
+        assert response.status_code == 202, response.text
+        body = response.json()
+        assert set(body) == {
+            "id",
+            "trigger",
+            "scope",
+            "status",
+            "started_at",
+            "finished_at",
+            "error",
+            "notes",
+            "schedule_day",
+            "stats",
+            "has_briefing",
+        }
+        assert body["trigger"] == "manual"
+        assert body["status"] == "running"
+        wait_idle(client, app)
+
+        saved = client.get(f"/api/tasks/{body['id']}").json()["run"]
+        assert saved["status"] == "success"
+        assert any("译文回填完成" in note for note in saved["notes"])
+
+        (item,) = client.get("/api/messages").json()
+        assert item["title_zh"] == "中文译文：Free Text API free tier announced"
+        assert item["summary_zh"] == (
+            "中文译文：Free API tier with 1000 monthly requests and no purchase required."
+        )
+        assert item["title"] == "Free Text API free tier announced"
+        assert item["summary"] == "Free API tier with 1000 monthly requests and no purchase required."
+
+        lead = next(
+            entry
+            for entry in client.get("/api/leads").json()
+            if entry["resource"]["service"] == "Pending Lead"
+        )
+        assert lead["resource"]["failure_reason"] == stored_lead.failure_reason
+        assert lead["resource"]["failure_reason_zh"] == f"中文译文：{stored_lead.failure_reason}"
+    assert translator.batches
+
+
+@pytest.mark.parametrize(
+    "headers, expected",
+    [
+        ({"host": "evil.example"}, {400, 403}),
+        ({"host": "127.0.0.1.evil.example"}, {400, 403}),
+        ({"origin": "https://evil.example"}, {403}),
+        ({"origin": "null"}, {403}),
+        ({"origin": "http://testserver:18765"}, {403}),
+        ({"sec-fetch-site": "cross-site"}, {403}),
+    ],
+)
+@pytest.mark.parametrize("path", ["/api/translations/backfill", "/api/messages/backfill"])
+def test_foreign_host_or_origin_cannot_backfill_translations(
+    settings, monkeypatch, headers, expected, path
+):
+    translator = FixedTranslator()
+    install_translator(monkeypatch, translator)
+    app = create_app(settings, researcher=Researcher())
+    with TestClient(app) as client:
+        response = client.post(path, headers=headers)
+        assert response.status_code in expected
+        assert app.state.repository.list_runs() == []
+        assert translator.batches == []
+
+
+@pytest.mark.parametrize("path", ["/api/translations/backfill", "/api/messages/backfill"])
+def test_busy_task_returns_conflict_for_translation_backfill(settings, monkeypatch, path):
+    translator = FixedTranslator()
+    install_translator(monkeypatch, translator)
+    researcher = Researcher(blocked=True)
+    app = create_app(settings, researcher=researcher)
+    with TestClient(app) as client:
+        post_run(client)
+        try:
+            assert researcher.entered.wait(timeout=3)
+            response = client.post(path)
+            assert response.status_code == 409
+            assert response.json() == {
+                "detail": "已有研究任务运行中，当前无法发起另一项任务。查看运行中的任务，完成后再试。"
+            }
+            assert len(app.state.repository.list_runs()) == 1
+            assert translator.batches == []
+        finally:
+            assert client.portal is not None
+            client.portal.call(researcher.release.set)
+            wait_idle(client, app)
+
+
+def test_leads_messages_resources_and_task_detail_expose_zh_alongside_originals(settings):
+    app = create_app(settings, researcher=Researcher())
+    repository = app.state.repository
+    seed(
+        repository,
+        policy(
+            "Pending Lead",
+            status="pending",
+            evidence=[],
+            failure_reason="Official documentation does not state the free quota",
+        ),
+    )
+    message = collected_message("Free Text API", "text").model_copy(
+        update={"title": "Free Text API free tier announced"}
+    )
+    run, events = collect(repository, message)
+    (event,) = events
+    lead = next(item for item in repository.list_resources() if item.service == "Pending Lead")
+    repository.save_resource_translations(
+        [lead.model_copy(update={"failure_reason_zh": "官方文档未说明免费额度"})]
+    )
+    repository.save_news_translations(
+        [
+            event.model_copy(
+                update={
+                    "title_zh": "免费文本接口层级发布",
+                    "summary_zh": "免费接口层级，每月一千次请求，无需购买",
+                    "policy": event.policy.model_copy(update={"quota_zh": "每月一千次请求"}),
+                }
+            )
+        ]
+    )
+    resource = repository.get_resource(event.resource_id)
+    assert resource is not None
+    repository.save_message_translations(
+        resource.id,
+        [
+            offer.model_copy(
+                update={
+                    "title_zh": "免费文本接口层级发布",
+                    "summary_zh": "免费接口层级，每月一千次请求，无需购买",
+                }
+            )
+            for offer in resource.messages
+        ],
+    )
+
+    with TestClient(app) as client:
+        leads = client.get("/api/leads").json()
+        lead_item = next(
+            entry for entry in leads if entry["resource"]["service"] == "Pending Lead"
+        )
+        assert lead_item["resource"]["failure_reason_zh"] == "官方文档未说明免费额度"
+        assert lead_item["resource"]["failure_reason"] == lead.failure_reason
+        assert lead_item["resource"]["quota_zh"] == ""
+
+        feed = client.get("/api/messages").json()
+        message_item = next(entry for entry in feed if entry["id"] == event.id)
+        assert message_item["title_zh"] == "免费文本接口层级发布"
+        assert message_item["summary_zh"] == "免费接口层级，每月一千次请求，无需购买"
+        assert message_item["title"] == event.title
+        assert message_item["summary"] == event.summary
+        assert message_item["policy"]["quota_zh"] == "每月一千次请求"
+        assert message_item["policy"]["quota"] == event.policy.quota
+        assert message_item["sources"][0]["excerpt"] == event.sources[0].excerpt
+        assert message_item["policy"]["claim_conditions_zh"] == ""
+        assert message_item["end_reason_zh"] == ""
+
+        resources = client.get("/api/resources").json()
+        listed = next(item for item in resources if item["id"] == event.resource_id)
+        assert listed["messages"][0]["title_zh"] == "免费文本接口层级发布"
+        assert listed["messages"][0]["title"] == event.title
+
+        detail = client.get(f"/api/resources/{event.resource_id}").json()
+        assert detail["resource"]["messages"][0]["summary_zh"] == "免费接口层级，每月一千次请求，无需购买"
+        assert detail["resource"]["quota"] == event.policy.quota
+
+        task = client.get(f"/api/tasks/{run.id}").json()
+        assert task["messages"][0]["title_zh"] == "免费文本接口层级发布"
+        assert task["messages"][0]["title"] == event.title
+
+
+def test_source_backfill_api_collects_pending_history_without_verifying_or_refreshing_age(settings, monkeypatch):
+    install_translator(monkeypatch, FixedTranslator())
+
+    class SourceResearcher(Researcher):
+        async def collect_sources(self, resources):
+            self.calls.append(resources)
+            message = collected_message(
+                resources[0].service, excerpt="Free API tier: 1000 requests per month."
+            )
+            message.policy.resource_id = resources[0].id
+            return ResearchBatch(messages=[message])
+
+    researcher = SourceResearcher()
+    app = create_app(settings, researcher=researcher)
+    repository = app.state.repository
+    seed(repository, policy("Missing History", status="pending", evidence=[]))
+    (original,) = repository.list_resources()
+    with TestClient(app) as client:
+        assert client.get("/api/app").json()["open_leads"] == 1
+        response = client.post("/api/messages/backfill", headers={"origin": "http://testserver"})
+        assert response.status_code == 202
+        run_id = response.json()["id"]
+        assert response.json()["scope"]["resource_ids"] == []
+        wait_idle(client, app)
+        saved = client.get(f"/api/tasks/{run_id}").json()["run"]
+        assert saved["status"] == "success" and not saved["error"]
+        assert client.get("/api/leads").json() == []
+        assert client.get("/api/app").json()["open_leads"] == 0
+        (resource,) = client.get("/api/resources").json()
+        assert resource["status"] == "pending" and resource["messages"][0]["sources"]
+        assert datetime.fromisoformat(resource["first_seen_at"]) == original.first_seen_at
+        (event,) = client.get("/api/messages").json()
+        assert datetime.fromisoformat(event["discovered_at"]) == original.first_seen_at
+        if original.last_success_at is None:
+            assert resource["last_success_at"] is None
+        else:
+            assert datetime.fromisoformat(resource["last_success_at"]) == original.last_success_at
+        again = client.post("/api/messages/backfill")
+        assert again.status_code == 202
+        wait_idle(client, app)
+        assert len(researcher.calls) == 1
+        assert len(client.get("/api/messages").json()) == 1

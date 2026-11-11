@@ -7,6 +7,7 @@ import { autoRefreshEnabled } from '@/app/refresh'
 import { formatDate, labelFor } from '@/app/presentation'
 import PageHeading from '@/components/shared/PageHeading.vue'
 import FactsList from '@/components/shared/FactsList.vue'
+import CollectedMessageList from '@/components/shared/CollectedMessageList.vue'
 import QueryError from '@/components/shared/QueryError.vue'
 import ErrorPage from '@/components/shared/ErrorPage.vue'
 import { Button } from '@/components/ui/button'
@@ -31,6 +32,7 @@ const {
 } = useTaskQuery(taskId)
 
 const run = computed(() => taskData.value?.run)
+const messages = computed(() => taskData.value?.messages ?? [])
 const changes = computed(() => taskData.value?.changes ?? [])
 
 const isNotFound = computed(
@@ -45,19 +47,23 @@ const scopeText = computed(() => {
   if (!scope) return ''
   const categories =
     (scope.categories ?? []).map((value) => labelFor(app.value, value)).join('、') || '未设置'
-  return `${categories} · ${labelFor(app.value, scope.region)}`
+  const resourceIds = scope.resource_ids ?? []
+  const mode = resourceIds.length
+    ? `按需核验 ${resourceIds.length} 个指定资源`
+    : '默认收集（不自动核验已有资源）'
+  return `${categories} · ${labelFor(app.value, scope.region)} · ${mode}`
 })
 
 const downloadHref = computed(() => (run.value ? `/api/briefings/${run.value.id}/download` : ''))
 
 const runningRefreshText = computed(() => {
   if (!autoRefreshEnabled.value) {
-    return '研究正在后台执行。自动刷新已暂停，使用“刷新任务状态”查看进展。'
+    return '任务正在后台执行。自动刷新已暂停，使用“刷新任务状态”查看进展。'
   }
   if (backgroundError.value) {
-    return '研究正在后台执行。自动刷新失败，正在显示上次数据；可手动重试。'
+    return '任务正在后台执行。自动刷新失败，正在显示上次数据；可手动重试。'
   }
-  return '研究正在后台执行。页面每 2 秒自动刷新；也可手动刷新。'
+  return '任务正在后台执行。页面每 2 秒自动刷新；也可手动刷新。'
 })
 
 const announcement = ref('')
@@ -123,15 +129,15 @@ watch(
       <p class="sr-only" role="status" aria-live="polite">{{ announcement }}</p>
       <h2>执行状态：{{ labelFor(app, run.status) }}</h2>
       <p v-if="run.status === 'running'" class="notice">{{ runningRefreshText }}</p>
-      <p v-else-if="run.status === 'partial'" class="notice notice--warning">本次仅完成部分研究，已核实结果已保存。下方列出失败原因及未完成事项。</p>
-      <p v-else-if="run.status === 'failed'" class="failure">本次任务失败。已有资源结论不会仅因请求失败被判定失效。查看原因后可返回任务页重新发起研究。</p>
+      <p v-else-if="run.status === 'partial'" class="notice notice--warning">本次仅完成部分，已收集结果已保存。下方列出失败原因及未完成事项。</p>
+      <p v-else-if="run.status === 'failed'" class="failure">本次任务失败。已有资源结论不会仅因请求失败被判定失效。查看原因后可返回任务页重新发起。</p>
 
       <FactsList>
         <dt>任务标识</dt>
         <dd><bdi>{{ run.id }}</bdi></dd>
         <dt>触发方式</dt>
         <dd>{{ labelFor(app, run.trigger) }}</dd>
-        <dt>本次研究范围</dt>
+        <dt>本次收集范围</dt>
         <dd>{{ scopeText }}</dd>
         <dt>开始时间</dt>
         <dd>{{ formatDate(run.started_at) }}</dd>
@@ -151,20 +157,23 @@ watch(
         <p class="failure preserve-lines">{{ run.error }}</p>
       </template>
 
-      <h3>研究说明与未完成事项</h3>
+      <h3>任务说明与未完成事项</h3>
       <ul v-if="run.notes.length" class="note-list">
         <li v-for="(note, index) in run.notes" :key="index" class="preserve-lines">{{ note }}</li>
       </ul>
       <p v-else class="muted">
         {{
           run.status === 'running'
-            ? '研究尚在进行，完成后记录实际范围与未完成事项。'
-            : '此任务没有补充说明。资源的核查失败及上次成功时间可在资源详情和简报中查看。'
+            ? '任务尚在进行，完成后记录实际范围与未完成事项。'
+            : '此任务没有补充说明。资源的核验失败及上次成功时间可在资源详情和简报中查看。'
         }}
       </p>
     </section>
 
     <section class="panel">
+      <h2>本次收集到的消息</h2>
+      <CollectedMessageList :items="messages" :show-ended="true" :link-resources="true" />
+
       <h2>本次记录的资源变化</h2>
       <ul v-if="changes.length">
         <li v-for="change in changes" :key="change.id ?? `${change.resource_id}-${change.discovered_at ?? ''}`">
@@ -176,8 +185,8 @@ watch(
       <p v-else class="muted">
         {{
           run.status === 'running'
-            ? '研究进行中，尚无已提交变化。'
-            : '本次没有新增或实质政策变化记录。待核实线索、失败及未完成情况以简报和任务说明为准。'
+            ? '任务进行中，尚无已提交变化。'
+            : '本次没有新增或实质政策变化记录。待核验线索、失败及未完成情况以简报和任务说明为准。'
         }}
       </p>
     </section>

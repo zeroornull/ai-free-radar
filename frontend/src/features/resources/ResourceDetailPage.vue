@@ -4,11 +4,12 @@ import { RouterLink, useRoute } from 'vue-router'
 import { ApiError } from '@/api/client'
 import type { ReviewAction, RunRead, UserAction } from '@/api/types'
 import { useAppQuery, useRecheckMutation, useResourceQuery, useReviewMutation } from '@/api/queries'
-import { formatBoolean, formatDate, labelFor } from '@/app/presentation'
+import { collectionLabel, hasCollectedSources, policyStatusLabel, formatBoolean, formatDate, labelFor } from '@/app/presentation'
 import PageHeading from '@/components/shared/PageHeading.vue'
 import StatusBadge from '@/components/shared/StatusBadge.vue'
 import PolicyChip from '@/components/shared/PolicyChip.vue'
 import SafeExternalLink from '@/components/shared/SafeExternalLink.vue'
+import CollectedMessageList from '@/components/shared/CollectedMessageList.vue'
 import FactsList from '@/components/shared/FactsList.vue'
 import EvidenceList from '@/components/shared/EvidenceList.vue'
 import QueryError from '@/components/shared/QueryError.vue'
@@ -36,6 +37,23 @@ const {
 
 const resource = computed(() => detail.value?.resource)
 const history = computed(() => detail.value?.history ?? [])
+const collectedMessages = computed(() => resource.value?.messages ?? [])
+const messageTimeline = computed(() => detail.value?.messages ?? [])
+const showEnded = ref(false)
+const verificationStatus = computed(() => {
+  if (!resource.value) return ''
+  if (resource.value.check_status === 'success' && !resource.value.last_success_at) {
+    return '尚未核验'
+  }
+  return labelFor(app.value, resource.value.check_status)
+})
+const verificationCheckedAt = computed(() => {
+  if (!resource.value) return ''
+  if (resource.value.check_status === 'success' && !resource.value.last_success_at) {
+    return '尚无按需核验'
+  }
+  return formatDate(resource.value.last_checked_at)
+})
 
 const isNotFound = computed(
   () => detailError.value instanceof ApiError && detailError.value.status === 404,
@@ -140,11 +158,30 @@ const recheckPending = recheckMutation.isPending
   />
   <template v-else-if="resource">
     <QueryError v-if="backgroundError" :message="errorMessage" @retry="refetchDetail()" />
+    <div class="chips">
+      <StatusBadge :value="hasCollectedSources(resource) ? 'success' : 'pending'" :label="collectionLabel(resource)" />
+      <span class="chip">{{ policyStatusLabel(resource.status) }}</span>
+      <span class="meta">首次发现：{{ formatDate(resource.first_seen_at) }}</span>
+    </div>
 
-    <section class="panel" aria-labelledby="resource-policy">
-      <h2 id="resource-policy">免费政策与接入信息</h2>
+    <section class="panel" aria-labelledby="resource-collected">
+      <h2 id="resource-collected">收集到的免费消息</h2>
+      <p class="muted">
+        每个活动保留最近一次收集报告与来源链接。报告参数来自消息内容，不代表已核验政策；
+        未知条件与结束状态按来源保留，不视为收集失败。
+      </p>
+      <label class="check-option"><input v-model="showEnded" type="checkbox" /> 显示历史（含已结束活动）</label>
+      <CollectedMessageList :items="collectedMessages" :show-ended="showEnded" />
+    </section>
+    <section v-if="messageTimeline.length" class="panel" aria-labelledby="resource-messages">
+      <h2 id="resource-messages">消息动态</h2>
+      <p class="muted">收集过程中记录的新增、变化、结束与恢复事件，按发现时间保留。</p>
+      <CollectedMessageList :items="messageTimeline" :show-ended="true" :link-resources="true" />
+    </section>
+    <details class="panel" aria-labelledby="resource-policy">
+      <summary id="resource-policy">可选：官方政策核验与接入信息</summary>
       <div class="chips">
-        <StatusBadge :value="resource.status" :label="labelFor(app, resource.status)" />
+        <StatusBadge :value="resource.status" :label="policyStatusLabel(resource.status)" />
         <span class="chip">{{ labelFor(app, resource.category) }}</span>
         <span class="chip">{{ labelFor(app, resource.free_type) }}</span>
         <PolicyChip
@@ -152,11 +189,19 @@ const recheckPending = recheckMutation.isPending
           :label="labelFor(app, resource.china_policy)"
         />
       </div>
-      <div v-if="resource.check_status !== 'success'" class="notice failure-note">
+      <p class="muted">以下政策字段与收集报告分开保存。上次成功核验：{{ formatDate(resource.last_success_at, '尚无成功核验；以下字段尚未确认') }}。收集消息不会更新这些字段。</p>
+      <div v-if="resource.check_status === 'failed'" class="notice failure-note">
         <div>
-          <strong>本次核查{{ labelFor(app, resource.check_status) }}，结论未获本次更新。</strong>
-          <p>{{ resource.failure_reason || '尚无完整核查结果；保留上次已确认结论。' }}</p>
-          <p>上次成功核查：{{ formatDate(resource.last_success_at) }}</p>
+          <strong>本次按需核验失败，未更新已核验结论。</strong>
+          <p>{{ resource.failure_reason || '核验请求失败；保留上次已确认结论。' }}</p>
+          <p>上次成功核验：{{ formatDate(resource.last_success_at, '尚无核验记录') }}</p>
+        </div>
+      </div>
+      <div v-else-if="resource.last_checked_at && resource.check_status === 'incomplete'" class="notice">
+        <div>
+          <strong>本次按需核验未完成，未更新已核验结论。</strong>
+          <p>保留上次已确认结论。收集到的消息不受影响。</p>
+          <p>上次成功核验：{{ formatDate(resource.last_success_at, '尚无核验记录') }}</p>
         </div>
       </div>
       <FactsList>
@@ -194,16 +239,14 @@ const recheckPending = recheckMutation.isPending
         <dd><SafeExternalLink :value="resource.api_url" label="打开 API 接入入口" /></dd>
         <dt>API 文档</dt>
         <dd><SafeExternalLink :value="resource.docs_url" label="阅读 API 文档" /></dd>
-        <dt>本次核查结果</dt>
-        <dd>{{ labelFor(app, resource.check_status) }}</dd>
-        <dt>最近核查时间</dt>
-        <dd>{{ formatDate(resource.last_checked_at) }}</dd>
-        <dt>上次成功核查</dt>
+        <dt>按需核验状态</dt>
+        <dd>{{ verificationStatus }}</dd>
+        <dt>最近按需核验时间</dt>
+        <dd>{{ verificationCheckedAt }}</dd>
+        <dt>上次成功核验</dt>
         <dd>{{ formatDate(resource.last_success_at) }}</dd>
         <dt>首次发现</dt>
         <dd>{{ formatDate(resource.first_seen_at) }}</dd>
-        <dt>已推荐时间</dt>
-        <dd>{{ formatDate(resource.recommended_at) }}</dd>
         <dt>最近关联任务</dt>
         <dd>
           <RouterLink v-if="resource.last_task_id" :to="`/tasks/${resource.last_task_id}`">
@@ -214,11 +257,13 @@ const recheckPending = recheckMutation.isPending
         <dt>资源标识</dt>
         <dd><bdi>{{ resource.id }}</bdi></dd>
       </FactsList>
-    </section>
+    </details>
+
+
 
     <section class="panel" aria-labelledby="resource-review">
       <h2 id="resource-review">人工判断</h2>
-      <p class="muted">人工判断不改变官方政策与证据字段。被忽略的资源不再自动重查，也不进入简报。</p>
+      <p class="muted">人工判断不改变官方政策与证据字段。被忽略的资源不再进入收集消息与简报。</p>
 
       <div v-if="review">
         <div class="chips">
@@ -284,12 +329,12 @@ const recheckPending = recheckMutation.isPending
           :disabled="recheckPending"
           @click="triggerRecheck"
         >
-          重查这一条
+          按需核验
         </Button>
       </div>
       <p v-if="recheckError" class="error-message" role="alert">{{ recheckError }}</p>
       <p v-if="recheckRun" class="meta" role="status">
-        已发起重查任务，<RouterLink :to="`/tasks/${recheckRun.id}`">查看运行状态</RouterLink>。
+        已发起按需核验任务，<RouterLink :to="`/tasks/${recheckRun.id}`">查看运行状态</RouterLink>。
       </p>
 
       <form class="review-note-form" @submit.prevent="saveNote">
@@ -322,7 +367,10 @@ const recheckPending = recheckMutation.isPending
 
     <section class="panel">
       <h2>关键事实与来源</h2>
-      <p class="muted">官方依据用于确认政策；社区线索仅用于发现，不能单独支持正式推荐。</p>
+      <p class="muted">
+        这里只列出按需核验时保存的官方依据。收集消息与社区来源不代表已核验政策，
+        没有官方依据的结论不能作为正式政策。
+      </p>
       <EvidenceList :items="resource.evidence ?? []" />
     </section>
 

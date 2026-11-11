@@ -20,11 +20,27 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
 
 from aifreeradar.config import ConfigurationError, Settings, load_settings
-from aifreeradar.models import Category, Evidence, Policy, ResearchBatch, Resource, Scope
+from aifreeradar.models import (
+    Category,
+    CollectedMessage,
+    Evidence,
+    MessageSource,
+    Policy,
+    ResearchBatch,
+    Resource,
+    RunStats,
+    Scope,
+)
 from aifreeradar.research import (
     BASELINE_QUERIES,
+    COLLECTION_INSTRUCTIONS,
+    COLLECTION_PAGE_LIMIT,
     MAX_BATCH_FETCH,
+    MAX_COLLECTION_FETCH,
+    MAX_COLLECTION_SEARCH,
     MAX_DIRECT_FETCH,
+    MAX_VERIFY_FETCH,
+    MAX_VERIFY_SEARCH,
     MODEL_PAGE_LIMIT,
     RECHECK_GROUP_SIZE,
     FetchedPage,
@@ -251,6 +267,10 @@ QUOTE = (
     "No payment required. No credit card required. Free registration. "
     "API documentation describes the Developer API."
 )
+COMMUNITY = "https://community.example.org/free-api-report"
+SNIPPET = "Example Developer API free tier provides 1000 requests per month. No payment required."
+COMMUNITY_SNIPPET = "Community report: Developer API plan offers 1000 free requests per month."
+WEB_ONLY_TEXT = "Free image generator website includes 100 credits; no API is provided."
 
 
 def quoted_policy(**updates):
@@ -293,18 +313,66 @@ def quoted_policy(**updates):
     return Policy(**values)
 
 
+def reported_policy(**updates):
+    values = {
+        "provider": "Example",
+        "service": "Developer API",
+        "category": "text",
+        "provider_domain": "example.test",
+        "service_key": "developer-api",
+        "docs_url": SOURCE,
+        "free_type": "ongoing",
+        "quota": "1000",
+        "quota_unit": "requests",
+        "refresh_cycle": "per month",
+        "claim_conditions": "Free registration",
+        "payment_required": False,
+        "payment_method_required": False,
+    }
+    values.update(updates)
+    return Policy(**values)
+
+
+def collected_message(policy=None, sources=None, **updates):
+    values = {
+        "policy": policy or reported_policy(),
+        "offer_key": "developer-free",
+        "title": "Free Developer API",
+        "summary": "Free 1000 requests per month through the Developer API.",
+        "sources": sources
+        or [
+            MessageSource(
+                url=SOURCE,
+                title="Free API policy",
+                excerpt=QUOTE,
+                source_type="official",
+                access="page",
+            )
+        ],
+    }
+    values.update(updates)
+    return CollectedMessage(**values)
+
+
+def explicit_scope(resource: Resource) -> Scope:
+    return Scope(categories=[Category.TEXT], resource_ids=[resource.id])
+
+
 class SearchTransport:
     """Replace the external search boundary, retaining actual tools and Agent loop."""
 
-    def __init__(self, error=None):
+    def __init__(self, rows=None, error=None):
         self.calls = []
         self.error = error
+        self.rows = rows
 
     async def search(self, query):
         self.calls.append(query)
         if self.error:
             raise self.error
-        return [{"title": "Free API policy", "url": SOURCE, "snippet": "Discovery only"}]
+        return self.rows or [
+            {"title": "Example free API", "url": SOURCE, "snippet": SNIPPET}
+        ]
 
 
 class SourceTransport:
@@ -335,7 +403,7 @@ def policy_model(policy=None, *, fail_image=False, empty_recheck=False):
             for message in messages
             for part in getattr(message, "parts", ())
         )
-        if fail_image and "image API policies" in prompt:
+        if fail_image and "image API" in prompt:
             raise RuntimeError("Selected model failed for image research")
         results = tool_results(messages)
         if empty_recheck and "Recheck exactly" in prompt:
@@ -358,24 +426,62 @@ def policy_model(policy=None, *, fail_image=False, empty_recheck=False):
     return FunctionModel(respond)
 
 
+def prompt_text(messages):
+    return "\n".join(
+        str(getattr(part, "content", part))
+        for message in messages
+        for part in getattr(message, "parts", ())
+    )
+
+
+def collection_model(message, *, fetch=True, search=False, fail_image=False, prompts=None):
+    """Deterministic collection model that executes real tools, then reports messages."""
+    fetch_url = message.sources[0].url
+
+    def respond(messages, info):
+        text = prompt_text(messages)
+        if prompts is not None:
+            prompts.append(text)
+        if fail_image and "image API" in text:
+            raise RuntimeError("Selected model failed for image collection")
+        results = tool_results(messages)
+        if search and not any(part.tool_name == "search_web" for part in results):
+            return ModelResponse([ToolCallPart("search_web", {"query": "official free API"})])
+        if fetch and not any(part.tool_name == "fetch_page" for part in results):
+            return ModelResponse([ToolCallPart("fetch_page", {"url": fetch_url})])
+        return ModelResponse(
+            [
+                ToolCallPart(
+                    info.output_tools[0].name,
+                    ResearchBatch(messages=[message]).model_dump(mode="json"),
+                )
+            ]
+        )
+
+    return FunctionModel(respond)
+
+
 @pytest.mark.asyncio
-async def test_real_agent_fetches_and_validates_official_policy(tmp_path):
-    search, fetch = SearchTransport(), SourceTransport()
+async def test_default_collection_uses_fetched_page_without_rechecks(tmp_path):
+    prompts = []
+    message = collected_message()
     researcher = HarnessResearcher(
         Settings(data_dir=tmp_path),
-        model=policy_model(),
-        search_client=cast(SearchClient, search),
-        fetcher=cast(PublicPageFetcher, fetch),
+        model=collection_model(message, prompts=prompts),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, SourceTransport()),
     )
     batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+    assert not batch.resources
     assert not batch.failures
-    assert len(batch.resources) == 1
-    resource = batch.resources[0]
-    assert resource.status == "active"
-    assert resource.quota == "1000" and resource.quota_unit == "requests"
-    assert search.calls and fetch.calls == [SOURCE]
-    assert {e.checked_at for e in resource.evidence} == {CHECKED}
-    assert {e.official_domain for e in resource.evidence} == {"example.test"}
+    assert len(batch.messages) == 1
+    reported = batch.messages[0]
+    assert reported.sources[0].access == "page"
+    assert reported.sources[0].source_type == "official"
+    assert reported.sources[0].excerpt == QUOTE
+    assert reported.policy.status == "pending"
+    assert any("EXISTING_OFFERS_JSON" in prompt for prompt in prompts)
+    assert not any("Recheck exactly" in prompt for prompt in prompts)
 
 
 @pytest.mark.asyncio
@@ -383,14 +489,14 @@ async def test_research_records_search_fetch_and_model_usage(tmp_path):
     search, fetch = SearchTransport(), SourceTransport()
     researcher = HarnessResearcher(
         Settings(data_dir=tmp_path),
-        model=TestModel(),
+        model=collection_model(collected_message()),
         search_client=cast(SearchClient, search),
         fetcher=cast(PublicPageFetcher, fetch),
     )
     await researcher.research(Scope(categories=[Category.TEXT]), [])
     stats = researcher.last_stats
-    assert stats.search_calls == len(search.calls)
-    assert stats.fetch_calls >= 1
+    assert stats.search_calls == len(search.calls) == 6
+    assert stats.fetch_calls == 1
     assert stats.model_requests >= 1
     for value in (
         stats.search_calls,
@@ -410,7 +516,8 @@ async def test_research_records_search_fetch_and_model_usage(tmp_path):
     "defect", ["hallucinated_quote", "unfetched", "wrong_value", "third_party"]
 )
 async def test_real_agent_rejects_unproven_official_evidence(tmp_path, defect):
-    policy = quoted_policy()
+    known = Resource(**quoted_policy().model_dump(), id="known-text")
+    policy = quoted_policy(resource_id=known.id)
     fetch = SourceTransport()
     if defect == "hallucinated_quote":
         fetch.text = "Official documentation, with no free policy stated."
@@ -428,24 +535,27 @@ async def test_real_agent_rejects_unproven_official_evidence(tmp_path, defect):
         search_client=cast(SearchClient, SearchTransport()),
         fetcher=cast(PublicPageFetcher, fetch),
     )
-    batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+    batch = await researcher.research(explicit_scope(known), [known])
     assert batch.failures
     assert batch.resources[0].status == "pending"
-    assert batch.resources[0].check_status == "incomplete"
+    assert batch.resources[0].check_status == "failed"
     if defect != "wrong_value":
         assert not batch.resources[0].evidence
 
 
 @pytest.mark.asyncio
 async def test_documentation_link_must_itself_be_fetched(tmp_path):
-    policy = quoted_policy(docs_url="https://docs.example.test/not-opened")
+    known = Resource(**quoted_policy().model_dump(), id="known-text")
+    policy = quoted_policy(
+        resource_id=known.id, docs_url="https://docs.example.test/not-opened"
+    )
     researcher = HarnessResearcher(
         Settings(data_dir=tmp_path),
         model=policy_model(policy),
         search_client=cast(SearchClient, SearchTransport()),
         fetcher=cast(PublicPageFetcher, SourceTransport()),
     )
-    batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+    batch = await researcher.research(explicit_scope(known), [known])
     assert batch.resources[0].status == "pending"
     assert any("documentation link" in failure for failure in batch.failures)
 
@@ -462,7 +572,9 @@ async def test_limited_offer_preserves_source_validity_without_invented_date(tmp
         "docs_url", "free_type", "quota", "quota_unit", "claim_conditions",
         "payment_required", "payment_method_required", "expiry_notes",
     )
+    known = Resource(**quoted_policy().model_dump(), id="known-image")
     policy = quoted_policy(
+        resource_id=known.id,
         free_type="limited",
         quota="20",
         quota_unit="images",
@@ -481,7 +593,7 @@ async def test_limited_offer_preserves_source_validity_without_invented_date(tmp
         search_client=cast(SearchClient, SearchTransport()),
         fetcher=cast(PublicPageFetcher, SourceTransport(text=quote)),
     )
-    resource, = (await researcher.research(Scope(categories=[Category.TEXT]), [])).resources
+    resource, = (await researcher.research(explicit_scope(known), [known])).resources
     assert resource.status == "active"
     assert resource.free_type == "limited"
     assert resource.expires_at is None
@@ -527,28 +639,31 @@ def test_mainland_support_requires_registration_and_api_use_in_fetched_text(tmp_
 
 
 @pytest.mark.asyncio
-async def test_fetch_failure_never_creates_verified_policy(tmp_path):
+async def test_strict_fetch_failure_never_creates_verified_policy(tmp_path):
+    known = Resource(**quoted_policy().model_dump(), id="known-text")
     researcher = HarnessResearcher(
         Settings(data_dir=tmp_path),
-        model=policy_model(),
+        model=policy_model(quoted_policy(resource_id=known.id)),
         search_client=cast(SearchClient, SearchTransport()),
         fetcher=cast(PublicPageFetcher, SourceTransport(error=TimeoutError("unreachable"))),
     )
-    batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+    batch = await researcher.research(explicit_scope(known), [known])
     assert batch.resources[0].status == "pending"
+    assert batch.resources[0].check_status == "failed"
     assert any("Source retrieval failed" in failure for failure in batch.failures)
 
 
 @pytest.mark.asyncio
-async def test_failed_category_preserves_other_real_agent_result(tmp_path):
+async def test_failed_category_preserves_other_real_collection_result(tmp_path):
     researcher = HarnessResearcher(
         Settings(data_dir=tmp_path),
-        model=policy_model(fail_image=True),
+        model=collection_model(collected_message(), fail_image=True),
         search_client=cast(SearchClient, SearchTransport()),
         fetcher=cast(PublicPageFetcher, SourceTransport()),
     )
     batch = await researcher.research(Scope(categories=[Category.TEXT, Category.IMAGE]), [])
-    assert len(batch.resources) == 1 and batch.resources[0].status == "active"
+    assert len(batch.messages) == 1
+    assert batch.messages[0].sources[0].access == "page"
     assert any("image" in failure and "failed" in failure for failure in batch.failures)
 
 
@@ -565,14 +680,14 @@ async def test_missing_matching_recheck_is_explicit_and_scoped(tmp_path):
         search_client=cast(SearchClient, SearchTransport()),
         fetcher=cast(PublicPageFetcher, SourceTransport()),
     )
-    batch = await researcher.research(Scope(categories=[Category.TEXT]), [known, outside, expired])
+    batch = await researcher.research(scope=explicit_scope(known), existing=[known, outside, expired])
     assert len(batch.resources) == 1
     attempt = batch.resources[0]
     assert attempt.resource_id == known.id
     assert attempt.check_status == "failed"
     assert attempt.status == known.status and attempt.quota == known.quota
     assert "matching recheck" in attempt.failure_reason
-    assert any("matching recheck" in failure for failure in batch.failures)
+    assert not batch.messages
 
 
 @pytest.mark.asyncio
@@ -584,7 +699,7 @@ async def test_existing_recheck_uses_authoritative_resource_id(tmp_path):
         search_client=cast(SearchClient, SearchTransport()),
         fetcher=cast(PublicPageFetcher, SourceTransport()),
     )
-    batch = await researcher.research(Scope(categories=[Category.TEXT]), [known])
+    batch = await researcher.research(explicit_scope(known), [known])
     assert not batch.failures
     assert len(batch.resources) == 1
     assert batch.resources[0].resource_id == known.id
@@ -621,7 +736,7 @@ async def test_configured_search_failure_is_reported_by_real_tool_loop(tmp_path)
     search = SearchTransport(error=RuntimeError("configured provider unavailable"))
     researcher = HarnessResearcher(
         Settings(data_dir=tmp_path, search_provider="brave"),
-        model=policy_model(),
+        model=collection_model(collected_message(), fetch=False),
         search_client=cast(SearchClient, search),
         fetcher=cast(PublicPageFetcher, SourceTransport()),
     )
@@ -956,7 +1071,7 @@ async def test_categories_research_concurrently(tmp_path, monkeypatch):
             both_entered.set()
         await asyncio.wait_for(both_entered.wait(), timeout=5)
         finished += 1
-        return ResearchBatch(), ResearchContext()
+        return ResearchBatch(), ResearchContext(search_count=1)
 
     monkeypatch.setattr(researcher, "_segment", segment)
     batch = await researcher.research(Scope(categories=[Category.TEXT, Category.IMAGE]), [])
@@ -988,7 +1103,7 @@ def test_clip_for_model_keeps_policy_windows():
 
 
 @pytest.mark.asyncio
-async def test_recheck_groups_batch_existing_resources(tmp_path, monkeypatch):
+async def test_recheck_groups_batch_explicit_resources(tmp_path, monkeypatch):
     resources = [
         Resource(
             **quoted_policy(service=f"API {index}", service_key=f"api-{index}").model_dump(),
@@ -1007,8 +1122,6 @@ async def test_recheck_groups_batch_existing_resources(tmp_path, monkeypatch):
 
     async def segment(prompt, **kwargs):
         prompts.append(prompt)
-        if "EXISTING_RECORDS_JSON" in prompt:
-            return ResearchBatch(), ResearchContext()
         return (
             ResearchBatch(
                 resources=[
@@ -1026,25 +1139,23 @@ async def test_recheck_groups_batch_existing_resources(tmp_path, monkeypatch):
 
     monkeypatch.setattr(researcher, "_segment", segment)
     monkeypatch.setattr(researcher, "validate_policy", lambda policy, context: (policy, []))
-    batch = await researcher.research(Scope(categories=[Category.TEXT]), resources)
+    scope = Scope(categories=[Category.TEXT], resource_ids=[r.id for r in resources])
+    batch = await researcher.research(scope, resources)
     expected_groups = -(-len(resources) // RECHECK_GROUP_SIZE)
-    recheck_prompts = [prompt for prompt in prompts if "EXISTING_RECORDS_JSON" not in prompt]
-    assert len(recheck_prompts) == expected_groups == 2
-    assert len(prompts) == 1 + expected_groups
+    assert len(prompts) == expected_groups == 2
+    assert all("Recheck exactly" in prompt for prompt in prompts)
+    assert not any("EXISTING_OFFERS_JSON" in prompt for prompt in prompts)
     chunked = [
-        [resource.id for resource in resources if resource.id in prompt]
-        for prompt in recheck_prompts
+        [resource.id for resource in resources if resource.id in prompt] for prompt in prompts
     ]
     assert sorted(len(chunk) for chunk in chunked) == [1, RECHECK_GROUP_SIZE]
-    assert sorted(rid for chunk in chunked for rid in chunk) == sorted(
-        resource.id for resource in resources
-    )
     returned_ids = [policy.resource_id for policy in batch.resources]
     assert all(rid is not None for rid in returned_ids)
     assert sorted(rid for rid in returned_ids if rid is not None) == sorted(
         resource.id for resource in resources
     )
     assert len(returned_ids) == len(set(returned_ids)) == len(resources)
+    assert not batch.messages
 
 
 @pytest.mark.asyncio
@@ -1075,7 +1186,7 @@ async def test_fetch_pages_returns_per_url_errors_and_caps(tmp_path):
     assert len(entries) == len(urls)
     assert set(fetch.calls) == set(urls[:MAX_BATCH_FETCH])
     assert capped not in fetch.calls
-    assert failure in context.failures
+    assert failure in context.fetch_errors
 
 
 @pytest.mark.asyncio
@@ -1108,14 +1219,14 @@ async def test_single_resource_scope_skips_discovery_and_rechecks_only_target(
     batch = await researcher.research(
         Scope(categories=[Category.TEXT], resource_ids=[target.id]), [target, peer]
     )
-    # Exactly one recheck segment: no discovery prompt and no search discovery calls.
     assert len(prompts) == 1
-    assert "EXISTING_RECORDS_JSON" not in prompts[0]
+    assert "EXISTING_OFFERS_JSON" not in prompts[0]
     assert "Recheck exactly" in prompts[0]
     assert target.id in prompts[0]
     assert peer.id not in prompts[0]
     assert search.calls == []
     assert [policy.resource_id for policy in batch.resources] == [target.id]
+    assert not batch.messages
 
 
 def immediate_model():
@@ -1199,7 +1310,7 @@ async def test_direct_source_fetch_and_filtered_links_become_leads(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_robots_disallow_blocks_direct_fetch_and_records_failure(tmp_path):
+async def test_robots_disallow_blocks_direct_fetch_and_records_note(tmp_path):
     entry = "https://example.com/pricing"
     fetch = DirectTransport(robots="User-agent: *\nDisallow: /pricing\n")
     researcher = HarnessResearcher(
@@ -1213,7 +1324,7 @@ async def test_robots_disallow_blocks_direct_fetch_and_records_failure(tmp_path)
     batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
 
     assert entry not in fetch.calls
-    assert any("robots.txt" in failure for failure in batch.failures)
+    assert any("robots.txt" in note for note in batch.notes)
     assert not any(lead.origin == "direct" for lead in researcher.last_discoveries)
 
 
@@ -1233,7 +1344,7 @@ async def test_direct_sources_are_capped_at_max_direct_fetch(tmp_path):
 
     page_calls = [call for call in fetch.calls if not call.endswith("/robots.txt")]
     assert len(page_calls) == MAX_DIRECT_FETCH == 8
-    assert any("capped" in failure.lower() for failure in batch.failures)
+    assert any("capped" in note.lower() for note in batch.notes)
 
 
 @pytest.mark.asyncio
@@ -1286,3 +1397,490 @@ async def test_recheck_segment_uses_no_baseline_queries_or_leads(tmp_path, monke
     assert researcher.last_discoveries == []
     assert len(prompts) == 1
     assert "BASELINE_RESULTS_JSON" not in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_collection_accepts_community_snippet_with_unknown_quota(tmp_path):
+    message = collected_message(
+        policy=reported_policy(
+            docs_url="未说明",
+            api_url="未说明",
+            free_type="unknown",
+            quota="未说明",
+            quota_unit="未说明",
+            refresh_cycle="未说明",
+        ),
+        sources=[
+            MessageSource(
+                url=COMMUNITY,
+                title="Community report",
+                excerpt=COMMUNITY_SNIPPET,
+                source_type="community",
+                access="snippet",
+            )
+        ],
+    )
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=collection_model(message, fetch=False),
+        search_client=cast(
+            SearchClient,
+            SearchTransport(
+                rows=[
+                    {
+                        "title": "Community report",
+                        "url": COMMUNITY,
+                        "snippet": COMMUNITY_SNIPPET,
+                    }
+                ]
+            ),
+        ),
+        fetcher=cast(PublicPageFetcher, SourceTransport()),
+    )
+    batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+    assert not batch.failures
+    reported, = batch.messages
+    assert reported.sources[0].access == "snippet"
+    assert reported.sources[0].source_type == "community"
+    assert reported.policy.quota == "未说明" and reported.policy.quota_unit == "未说明"
+
+
+@pytest.mark.asyncio
+async def test_collection_preserves_actual_snippet_when_page_fetch_fails(tmp_path):
+    excerpt = "Example Developer API free tier provides 1000 requests per month."
+    message = collected_message(
+        sources=[
+            MessageSource(
+                url=SOURCE,
+                title="Free API policy",
+                excerpt=excerpt,
+                source_type="official",
+                access="page",
+            )
+        ]
+    )
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=collection_model(message),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, SourceTransport(error=TimeoutError("offline"))),
+    )
+    batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+    assert not batch.failures
+    reported, = batch.messages
+    assert reported.sources[0].access == "snippet"
+    assert reported.sources[0].source_type == "search"
+    assert reported.sources[0].excerpt == excerpt
+    assert any("Retained actual search snippet" in note for note in batch.notes)
+    assert any("Source retrieval failed" in note for note in batch.notes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("defect", ["invented_url", "invented_page_quote", "invented_snippet"])
+async def test_collection_rejects_invented_sources_and_quotes(tmp_path, defect):
+    if defect == "invented_url":
+        message = collected_message(
+            sources=[
+                MessageSource(
+                    url="https://docs.example.test/never-fetched",
+                    title="Invented page",
+                    excerpt=QUOTE,
+                    source_type="official",
+                    access="page",
+                )
+            ]
+        )
+        fetch = False
+    elif defect == "invented_page_quote":
+        message = collected_message(
+            sources=[
+                MessageSource(
+                    url=SOURCE,
+                    title="Invented quote",
+                    excerpt="Fabricated official quotation 999999 requests monthly.",
+                    source_type="official",
+                    access="page",
+                )
+            ]
+        )
+        fetch = True
+    else:
+        message = collected_message(
+            sources=[
+                MessageSource(
+                    url=SOURCE,
+                    title="Invented snippet",
+                    excerpt="Fabricated snippet quotation 999999 requests monthly.",
+                    source_type="search",
+                    access="snippet",
+                )
+            ]
+        )
+        fetch = False
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=collection_model(message, fetch=fetch),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, SourceTransport()),
+    )
+    batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+    assert not batch.messages
+    assert any("Discarded" in note for note in batch.notes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url", ["http://127.0.0.1/private", "https://example.test/register"]
+)
+async def test_collection_discards_unsafe_source_urls(tmp_path, url):
+    message = collected_message(
+        sources=[
+            MessageSource(
+                url=url,
+                title="Private network source",
+                excerpt=QUOTE,
+                source_type="official",
+                access="page",
+            )
+        ]
+    )
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=collection_model(message, fetch=False),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, SourceTransport()),
+    )
+
+    batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+
+    assert not batch.messages
+    assert any("unsafe source URL" in note for note in batch.notes)
+
+
+@pytest.mark.asyncio
+async def test_collection_excludes_explicit_payment(tmp_path):
+    message = collected_message(policy=reported_policy(payment_required=True))
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=collection_model(message),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, SourceTransport()),
+    )
+    batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+    assert not batch.messages
+    assert any("付款" in note or "payment" in note.lower() for note in batch.notes)
+
+
+@pytest.mark.asyncio
+async def test_collection_excludes_web_only_free_offer(tmp_path):
+    message = collected_message(
+        policy=reported_policy(docs_url="未说明", api_url="未说明"),
+        sources=[
+            MessageSource(
+                url=SOURCE,
+                title="Free image generator",
+                excerpt=WEB_ONLY_TEXT,
+                source_type="community",
+                access="page",
+            )
+        ],
+    )
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=collection_model(message),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, SourceTransport(text=WEB_ONLY_TEXT)),
+    )
+    batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+    assert not batch.messages
+    assert any("免费 API" in note for note in batch.notes)
+
+
+@pytest.mark.asyncio
+async def test_collection_allows_required_card_without_payment(tmp_path):
+    message = collected_message(policy=reported_policy(payment_method_required=True))
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=collection_model(message),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, SourceTransport()),
+    )
+    batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+    reported, = batch.messages
+    assert reported.policy.payment_required is False
+    assert reported.policy.payment_method_required is True
+
+
+@pytest.mark.asyncio
+async def test_collection_prompt_reuses_known_ids_and_offer_keys_without_rechecks(
+    tmp_path, monkeypatch
+):
+    known = Resource(
+        **reported_policy().model_dump(),
+        id="known-resource",
+        messages=[collected_message()],
+    )
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=TestModel(),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, SourceTransport()),
+    )
+    prompts = []
+
+    async def segment(prompt, **kwargs):
+        prompts.append(prompt)
+        return ResearchBatch(), ResearchContext(search_count=1)
+
+    monkeypatch.setattr(researcher, "_segment", segment)
+    batch = await researcher.research(Scope(categories=[Category.TEXT]), [known])
+    assert not batch.resources
+    prompt, = prompts
+    assert "EXISTING_OFFERS_JSON" in prompt
+    assert "known-resource" in prompt
+    assert "developer-api" in prompt
+    assert "developer-free" in prompt
+    assert "Recheck exactly" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_collection_binds_known_resource_update_without_rechecking(tmp_path):
+    known = Resource(**reported_policy().model_dump(), id="known-resource")
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=collection_model(collected_message()),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, SourceTransport()),
+    )
+
+    batch = await researcher.research(Scope(categories=[Category.TEXT]), [known])
+
+    assert not batch.failures
+    updated, = batch.messages
+    assert updated.policy.resource_id == known.id
+    assert updated.policy.status == "pending"
+    assert updated.policy.check_status == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_collection_uses_light_budgets_and_collection_instructions(
+    tmp_path, monkeypatch
+):
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=TestModel(),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, SourceTransport()),
+    )
+    seen = {}
+
+    async def segment(prompt, **kwargs):
+        seen.update(kwargs)
+        return ResearchBatch(), ResearchContext(search_count=1)
+
+    monkeypatch.setattr(researcher, "_segment", segment)
+    await researcher.research(Scope(categories=[Category.TEXT]), [])
+
+    assert seen["instructions"] == COLLECTION_INSTRUCTIONS
+    assert seen["search_budget"] == MAX_COLLECTION_SEARCH
+    assert seen["fetch_budget"] == MAX_COLLECTION_FETCH
+    assert seen["page_limit"] == COLLECTION_PAGE_LIMIT
+    assert seen["search_budget"] < MAX_VERIFY_SEARCH
+    assert seen["fetch_budget"] < MAX_VERIFY_FETCH
+    assert seen["page_limit"] < MODEL_PAGE_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_research_merges_collected_messages_from_categories(tmp_path, monkeypatch):
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=TestModel(),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, SourceTransport()),
+    )
+
+    async def segment(prompt, **kwargs):
+        category = "text" if "free text API offers" in prompt else "image"
+        return (
+            ResearchBatch(
+                messages=[collected_message(policy=reported_policy(category=category))]
+            ),
+            ResearchContext(
+                search_count=1,
+                pages={SOURCE: FetchedPage(SOURCE, QUOTE, CHECKED)},
+            ),
+        )
+
+    monkeypatch.setattr(researcher, "_segment", segment)
+    batch = await researcher.research(Scope(categories=[Category.TEXT, Category.IMAGE]), [])
+    assert sorted(message.policy.category for message in batch.messages) == ["image", "text"]
+    assert not batch.failures
+
+
+@pytest.mark.asyncio
+async def test_fetch_budget_counts_actual_attempts_without_repeated_errors(tmp_path):
+    fetch = SourceTransport()
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=TestModel(),
+        fetcher=cast(PublicPageFetcher, fetch),
+    )
+    context = ResearchContext(fetch_budget=1)
+    first = await researcher.fetch_many([SOURCE], context)
+    assert first[0]["url"] == SOURCE
+    assert context.fetch_count == 1
+    await researcher.fetch_many([SOURCE], context)
+    assert context.fetch_count == 1
+    other = "https://docs.example.test/other-api"
+    third = "https://docs.example.test/third-api"
+    assert (await researcher.fetch_many([other], context))[0]["error"]
+    assert (await researcher.fetch_many([third], context))[0]["error"]
+    assert context.fetch_count == 1
+    budget_notes = [note for note in context.notes if "budget was exhausted" in note]
+    assert len(budget_notes) == 1
+    assert not context.fetch_errors
+
+
+@pytest.mark.asyncio
+async def test_search_budget_is_presented_and_refused_once(tmp_path):
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=TestModel(),
+        fetcher=cast(PublicPageFetcher, SourceTransport()),
+    )
+    search = SearchTransport()
+    researcher._search = cast(SearchClient, search)
+    context = ResearchContext(search_budget=1)
+    prepared = await researcher._discovery_prepass(Category.TEXT, context)
+    assert search.calls == [BASELINE_QUERIES[Category.TEXT][0]]
+    assert "searches_remaining=0" in prepared
+    assert len([note for note in context.notes if "search request budget" in note]) == 1
+
+
+def test_validate_message_requires_observed_end_reason(tmp_path):
+    researcher = HarnessResearcher(Settings(data_dir=tmp_path))
+    context = ResearchContext(pages={SOURCE: FetchedPage(SOURCE, QUOTE, CHECKED)})
+
+    unsupported = collected_message(ended=True, end_reason="官方公告停止免费额度")
+    checked, notes = researcher.validate_message(unsupported, context)
+    assert checked is not None
+    assert checked.ended is False
+    assert checked.end_reason == ""
+    assert any("end reason absent" in note for note in notes)
+
+    leftover = collected_message(ended=False, end_reason="leftover")
+    checked, _ = researcher.validate_message(leftover, context)
+    assert checked is not None
+    assert checked.end_reason == ""
+
+    supported_text = QUOTE + " The Developer API free tier has ended."
+    context.pages[SOURCE] = FetchedPage(SOURCE, supported_text, CHECKED)
+    supported = collected_message(
+        sources=[MessageSource(url=SOURCE, excerpt=supported_text, access="page")],
+        ended=True,
+        end_reason="The Developer API free tier has ended",
+    )
+    checked, notes = researcher.validate_message(supported, context)
+    assert checked is not None
+    assert checked.ended is True
+    assert checked.end_reason == "The Developer API free tier has ended"
+
+
+def test_message_source_rejects_credential_url():
+    with pytest.raises(ValidationError):
+        MessageSource(
+            url="https://user:password@example.test/policy",
+            excerpt="Free API documentation is available.",
+        )
+
+
+@pytest.mark.asyncio
+async def test_source_collection_targets_historical_service_and_accepts_unknown_conditions(tmp_path):
+    target = Resource(**reported_policy().model_dump(), id="historical-api", first_seen_at=CHECKED)
+    message = collected_message(
+        policy=reported_policy(
+            resource_id=target.id, free_type="unknown", api_url="未说明", docs_url="未说明",
+            quota="未说明", quota_unit="未说明", payment_required=None, payment_method_required=None,
+        ),
+        sources=[MessageSource(url=COMMUNITY, excerpt=COMMUNITY_SNIPPET, source_type="community")],
+    )
+    search = SearchTransport(rows=[{
+        "title": "Community free API report", "url": COMMUNITY, "snippet": COMMUNITY_SNIPPET,
+    }])
+    prompts = []
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=collection_model(message, fetch=False, prompts=prompts),
+        search_client=cast(SearchClient, search),
+    )
+    batch = await researcher.collect_sources([target])
+    assert not batch.resources and not batch.failures
+    (accepted,) = batch.messages
+    assert accepted.policy.resource_id == target.id
+    assert accepted.policy.free_type == "unknown" and accepted.policy.quota == "未说明"
+    assert accepted.policy.status == "pending" and accepted.sources[0].access == "snippet"
+    assert len(search.calls) == 1 and target.provider in search.calls[0] and target.service in search.calls[0]
+    assert all("SOURCE_TARGETS_JSON" in prompt for prompt in prompts)
+    assert not any("RECHECK_RESOURCES_JSON" in prompt or "BASELINE_RESULTS_JSON" in prompt for prompt in prompts)
+    assert researcher.last_stats.search_calls == 1 and researcher.last_stats.fetch_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_source_collection_with_no_missing_records_needs_no_model_or_search_credentials(tmp_path):
+    researcher = HarnessResearcher(Settings(data_dir=tmp_path, model_api_key_env="MISSING_BACKFILL_KEY"))
+    assert not (await researcher.collect_sources([])).messages
+    already_collected = Resource(
+        **reported_policy().model_dump(), id="already-collected", messages=[collected_message()]
+    )
+    batch = await researcher.collect_sources([already_collected])
+    assert not batch.messages and not batch.failures
+    assert researcher.last_stats == RunStats()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("defect", ["unrelated_service", "unobserved_quote"])
+async def test_source_collection_never_imports_unrelated_or_fabricated_reports(tmp_path, defect):
+    target = Resource(**reported_policy().model_dump(), id="historical-api")
+    message = collected_message(
+        policy=reported_policy(resource_id=target.id),
+        sources=[MessageSource(url=COMMUNITY, excerpt=COMMUNITY_SNIPPET)],
+    )
+    if defect == "unrelated_service":
+        message.policy.service_key = "a-different-api"
+    else:
+        message.sources[0].excerpt = "An invented free API report absent from the actual search result"
+    search = SearchTransport(rows=[{
+        "title": "Community free API report", "url": COMMUNITY, "snippet": COMMUNITY_SNIPPET,
+    }])
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path), model=collection_model(message, fetch=False),
+        search_client=cast(SearchClient, search),
+    )
+    batch = await researcher.collect_sources([target])
+    assert not batch.messages and not batch.resources
+    assert not batch.failures and batch.notes
+
+
+@pytest.mark.asyncio
+async def test_source_collection_cancelled_during_target_search_records_actual_usage(tmp_path):
+    entered = asyncio.Event()
+
+    class BlockingSearch(SearchTransport):
+        async def search(self, query):
+            self.calls.append(query)
+            entered.set()
+            await asyncio.Event().wait()
+            return []
+
+    search = BlockingSearch()
+    target = Resource(**reported_policy().model_dump(), id="historical-api")
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path), model=immediate_model(), search_client=cast(SearchClient, search),
+    )
+    task = asyncio.create_task(researcher.collect_sources([target]))
+    await asyncio.wait_for(entered.wait(), timeout=3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert researcher.last_stats.search_calls == 1
+    assert researcher.last_stats.model_requests == researcher.last_stats.fetch_calls == 0

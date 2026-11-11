@@ -190,6 +190,16 @@ class Policy(Record):
     status: ResourceStatus = ResourceStatus.PENDING
     check_status: CheckStatus = CheckStatus.SUCCESS
     failure_reason: str = ""
+    # Additive machine translations (zh). Empty means untranslated; the original
+    # field above always stays authoritative for verification and evidence.
+    quota_zh: str = ""
+    quota_unit_zh: str = ""
+    refresh_cycle_zh: str = ""
+    rate_limit_zh: str = ""
+    claim_conditions_zh: str = ""
+    expiry_notes_zh: str = ""
+    region_restrictions_zh: str = ""
+    failure_reason_zh: str = ""
 
     @field_validator("provider", "service")
     @classmethod
@@ -214,6 +224,86 @@ class Policy(Record):
         return aware_utc(value) if value else None
 
 
+class MessageSource(Record):
+    url: str
+    title: str = ""
+    excerpt: str
+    source_type: Literal["official", "community", "github", "search"] = "search"
+    access: Literal["page", "snippet"] = "snippet"
+    published_at: datetime | None = None
+
+    @field_validator("url")
+    @classmethod
+    def safe_url(cls, value: str) -> str:
+        value = value.strip()
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or any(ord(char) < 33 for char in value)
+            or "\\" in value
+        ):
+            raise ValueError("消息来源必须是无凭据的 HTTP(S) 链接")
+        return value
+
+    @field_validator("excerpt")
+    @classmethod
+    def nonempty_excerpt(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("消息来源摘录不能为空")
+        return value.strip()
+
+    @field_validator("published_at")
+    @classmethod
+    def publication_time(cls, value: datetime | None) -> datetime | None:
+        return aware_utc(value) if value else None
+
+
+class CollectedMessage(Record):
+    """A source report, kept separate from officially verified policy facts."""
+
+    policy: Policy
+    offer_key: str = "default"
+    title: str
+    summary: str
+    sources: list[MessageSource] = Field(min_length=1)
+    published_at: datetime | None = None
+    ended: bool = False
+    end_reason: str = ""
+    # Additive machine translations (zh); original title/summary/end_reason kept.
+    title_zh: str = ""
+    summary_zh: str = ""
+    end_reason_zh: str = ""
+
+    @field_validator("offer_key", "title", "summary")
+    @classmethod
+    def nonempty_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("活动标识、标题和免费摘要不能为空")
+        return value.strip()
+
+    @field_validator("published_at")
+    @classmethod
+    def publication_time(cls, value: datetime | None) -> datetime | None:
+        return aware_utc(value) if value else None
+
+
+class NewsItem(CollectedMessage):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    resource_id: str
+    task_id: str
+    kind: Literal["new", "changed", "expired", "restored"]
+    discovered_at: datetime = Field(default_factory=utc_now)
+    first_seen_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("discovered_at", "first_seen_at")
+    @classmethod
+    def event_time(cls, value: datetime) -> datetime:
+        return aware_utc(value)
+
+
 class Resource(Policy):
     id: str = Field(default_factory=lambda: uuid4().hex)
     first_seen_at: datetime = Field(default_factory=utc_now)
@@ -221,6 +311,7 @@ class Resource(Policy):
     last_success_at: datetime | None = None
     last_task_id: str = ""
     recommended_at: datetime | None = None
+    messages: list[CollectedMessage] = Field(default_factory=list)
 
     @field_validator("first_seen_at", "last_checked_at", "last_success_at", "recommended_at")
     @classmethod
@@ -267,6 +358,7 @@ class UserAction(Record):
 
 class ResearchBatch(Record):
     resources: list[Policy] = Field(default_factory=list)
+    messages: list[CollectedMessage] = Field(default_factory=list)
     failures: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     memory_notes: str = ""
@@ -353,7 +445,7 @@ def eligible_recommendation(resource: Policy, scope: Scope | None = None) -> boo
         resource.status == ResourceStatus.ACTIVE
         and resource.check_status == CheckStatus.SUCCESS
         and resource.payment_required is False
-        and resource.payment_method_required is False
+        and resource.payment_method_required is not None
         and (scope is None or scope.includes(resource))
         and (
             scope is None

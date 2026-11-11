@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue'
 import type { AppRead } from '@/api/types'
 import type { ResourceFilters } from '@/api/queries'
+import { policyStatusLabel } from '@/app/presentation'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -22,11 +23,13 @@ const emit = defineEmits<{
 const category = ref(props.applied.category)
 const chinaPolicy = ref(props.applied.china_policy)
 const status = ref(props.applied.status)
+const includeEnded = ref(props.applied.include_ended ?? false)
 
 function syncApplied(value: ResourceFilters) {
   category.value = value.category
   chinaPolicy.value = value.china_policy
   status.value = value.status
+  includeEnded.value = value.include_ended ?? false
 }
 
 // URL query is the source of truth: back/forward or programmatic navigation
@@ -35,7 +38,8 @@ function syncApplied(value: ResourceFilters) {
 // `applied` with a new object identity but the same values) cannot clobber an
 // unsubmitted draft.
 watch(
-  () => `${props.applied.category}\u0000${props.applied.china_policy}\u0000${props.applied.status}`,
+  () =>
+    `${props.applied.category}\u0000${props.applied.china_policy}\u0000${props.applied.status}\u0000${props.applied.include_ended ? '1' : '0'}`,
   () => syncApplied(props.applied),
 )
 
@@ -44,11 +48,12 @@ function submit() {
     category: category.value.trim(),
     china_policy: chinaPolicy.value.trim(),
     status: status.value.trim(),
+    include_ended: includeEnded.value,
   })
 }
 
 function clearFilters() {
-  syncApplied({ category: '', china_policy: '', status: '' })
+  syncApplied({ category: '', china_policy: '', status: '', include_ended: false })
   emit('clear')
 }
 
@@ -83,14 +88,21 @@ function entries(dict?: Record<string, string>) {
         </NativeSelect>
       </div>
       <div class="field">
-        <Label for="resource-status">资源状态</Label>
+        <Label for="resource-status">政策核验状态</Label>
         <NativeSelect id="resource-status" name="status" v-model="status">
-          <NativeSelectOption value="">全部状态</NativeSelectOption>
-          <NativeSelectOption v-for="[value, text] in entries(app?.resource_statuses)" :key="value" :value="value">
-            {{ text }}
+          <NativeSelectOption value="">全部政策状态</NativeSelectOption>
+          <NativeSelectOption v-for="[value] in entries(app?.resource_statuses)" :key="value" :value="value">
+            {{ policyStatusLabel(value) }}
           </NativeSelectOption>
         </NativeSelect>
       </div>
+    </div>
+    <div class="field checkbox-row">
+      <Label for="include-ended" class="check-option">
+        <input id="include-ended" v-model="includeEnded" type="checkbox" name="include_ended" />
+        显示全部活动（含已结束）
+      </Label>
+      <p class="form-note">默认只显示尚未结束的活动；条件未说明的消息仍会展示。</p>
     </div>
     <Alert v-if="error" variant="destructive" role="alert" class="mt-2">
       <AlertTitle>筛选条件无效</AlertTitle>
@@ -100,6 +112,6 @@ function entries(dict?: Record<string, string>) {
       <Button type="submit">筛选资源</Button>
       <Button type="button" variant="ghost" @click="clearFilters">清除筛选</Button>
     </div>
-    <p class="form-note">筛选仅改变当前显示，不修改研究范围或每日默认配置。</p>
+    <p class="form-note">筛选仅改变当前显示，不修改收集范围或每日默认配置。</p>
   </form>
 </template>

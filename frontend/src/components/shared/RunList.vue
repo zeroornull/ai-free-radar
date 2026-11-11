@@ -14,7 +14,11 @@ const { data: app } = useAppQuery()
 
 function scopeText(scope: Scope): string {
   const categories = (scope.categories ?? []).map((category) => labelFor(app.value, category))
-  return `${categories.join('、')} · ${labelFor(app.value, scope.region)}`
+  const resourceIds = scope.resource_ids ?? []
+  const mode = resourceIds.length
+    ? `按需核验 ${resourceIds.length} 个资源`
+    : '默认收集'
+  return `${categories.join('、')} · ${labelFor(app.value, scope.region)} · ${mode}`
 }
 </script>
 

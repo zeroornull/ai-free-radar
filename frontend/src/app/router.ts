@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import ResourcesPage from '@/features/resources/ResourcesPage.vue'
+import MessagesPage from '@/features/messages/MessagesPage.vue'
 import ResourceDetailPage from '@/features/resources/ResourceDetailPage.vue'
 import LeadsPage from '@/features/leads/LeadsPage.vue'
 import TasksPage from '@/features/tasks/TasksPage.vue'
@@ -16,8 +17,8 @@ declare module 'vue-router' {
 }
 
 const routes: RouteRecordRaw[] = [
-  { path: '/leads', name: 'leads', component: LeadsPage, meta: { title: '待核实线索' } },
-  { path: '/', redirect: '/resources' },
+  { path: '/leads', name: 'leads', component: LeadsPage, meta: { title: '历史线索' } },
+  { path: '/', name: 'messages', component: MessagesPage, meta: { title: '消息动态' } },
   { path: '/resources', name: 'resources', component: ResourcesPage, meta: { title: '资源库' } },
   {
     path: '/resources/:id',

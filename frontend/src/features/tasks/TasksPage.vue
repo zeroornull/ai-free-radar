@@ -48,7 +48,7 @@ const refreshStatusText = computed(() => {
 </script>
 
 <template>
-  <PageHeading eyebrow="研究任务" title="研究任务" />
+  <PageHeading eyebrow="收集任务" title="收集任务" />
 
   <template v-if="app">
     <ScheduleSummary :app="app" />
@@ -94,11 +94,11 @@ const refreshStatusText = computed(() => {
       <EmptyState
         v-else
         title="尚无任务记录"
-        description="选择上方研究范围后发起首次研究。"
+        description="选择上方收集范围后发起首次任务，或填写资源标识执行按需核验。"
       >
         <template #actions>
           <Button as-child variant="ghost" class="h-11">
-            <a href="#start-task">选择首次研究范围</a>
+            <a href="#start-task">选择首次收集范围</a>
           </Button>
         </template>
       </EmptyState>

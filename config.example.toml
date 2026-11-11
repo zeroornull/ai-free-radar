@@ -26,15 +26,17 @@ search_api_key_env = ""
 # remain supported but the settings page/database is the normal place.
 
 host = "127.0.0.1"
-port = 8765
+port = 18765
 schedule_enabled = true
 schedule_time = "09:00"
 
-# Optional direct discovery entry pages, grouped by category. TOML-only: the
-# settings page (/settings) cannot edit this table. Keys must be exact
-# category names; values are absolute http(s) URLs. Entries are allowlisted
-# entry pages (official pricing/docs pages, not bare API endpoints); their
-# links are followed one hop. Empty or absent disables direct sources.
+# Optional official entry pages for discovery, grouped by category. This is a
+# supplement, not a restriction: community, GitHub, and search snippets are
+# also accepted sources for collected messages. TOML-only: the settings page
+# (/settings) cannot edit this table. Keys must be exact category names;
+# values are absolute http(s) URLs. Entries are allowlisted entry pages
+# (official pricing/docs pages, not bare API endpoints); their links are
+# followed one hop. Empty or absent disables direct sources.
 # [direct_sources]
 # text = ["https://platform.openai.com/docs/pricing", "https://platform.openai.com/docs/models"]
 # image = ["https://platform.openai.com/docs/guides/image-generation"]

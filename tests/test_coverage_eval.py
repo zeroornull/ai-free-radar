@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import urlsplit
 
 import pytest
 
-from aifreeradar import research
+from aifreeradar import coverage_eval, research
 from aifreeradar.coverage_eval import (
     SEED_PATH,
     load_seed_targets,
@@ -16,7 +17,15 @@ from aifreeradar.coverage_eval import (
     match_targets,
     render_report,
 )
-from aifreeradar.models import CATEGORY_LABELS, Category, LeadDiscovery, Policy
+from aifreeradar.models import (
+    CATEGORY_LABELS,
+    Category,
+    CollectedMessage,
+    LeadDiscovery,
+    MessageSource,
+    Policy,
+    ResearchBatch,
+)
 
 
 def _target(category: Category, url: str = "https://example.com/pricing") -> dict:
@@ -205,3 +214,56 @@ def test_main_dry_run_needs_no_network_or_model(tmp_path: Path, monkeypatch) -> 
 
     assert code == 0
     assert not out.exists()
+
+
+def test_main_reports_collection_coverage_without_official_verification(
+    tmp_path: Path, monkeypatch
+) -> None:
+    target = _target(Category.TEXT, "https://example.test/pricing")
+    monkeypatch.setattr(coverage_eval, "load_seed_targets", lambda path: [target])
+
+    class CollectionResearcher:
+        last_discoveries: ClassVar[list] = []
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def research(self, scope, existing):
+            return ResearchBatch(
+                messages=[
+                    CollectedMessage(
+                        policy=Policy(
+                            provider="Example",
+                            service="Example API",
+                            category=Category.TEXT,
+                            provider_domain="example.test",
+                        ),
+                        offer_key="example-free",
+                        title="Example free API",
+                        summary="Free API credits reported by the source.",
+                        sources=[
+                            MessageSource(
+                                url="https://example.test/pricing",
+                                excerpt="Free API credits are available.",
+                            )
+                        ],
+                    )
+                ]
+            )
+
+    monkeypatch.setattr(research, "HarnessResearcher", CollectionResearcher)
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'data_dir = "data"\nmodel = "openai:gpt-4.1-mini"\n'
+        '[default_scope]\ncategories = ["text"]\nregion = "global"\n',
+        encoding="utf-8",
+    )
+    out = tmp_path / "report.md"
+
+    assert main(["--config", str(config), "--out", str(out)]) == 0
+
+    report = out.read_text(encoding="utf-8")
+    assert "- 研究产出记录: 1" in report
+    assert "- 其中收集消息（未核验）: 1" in report
+    assert "不代表官方政策核验通过" in report
+    assert f"| {CATEGORY_LABELS[Category.TEXT]} (text) | 1 | 0 | 1 |" in report

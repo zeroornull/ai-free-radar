@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import multiprocessing
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -10,13 +11,28 @@ from typing import Literal
 
 import pytest
 from filelock import FileLock
+from pydantic_ai.messages import ModelResponse, ToolCallPart
+from pydantic_ai.models.function import FunctionModel
 
+from aifreeradar import translation as translation_module
 from aifreeradar.config import Settings
-from aifreeradar.models import Category, Evidence, Policy, ResearchBatch, Run, RunStats, Scope
+from aifreeradar.models import (
+    UNKNOWN,
+    Category,
+    CollectedMessage,
+    Evidence,
+    FreeType,
+    MessageSource,
+    Policy,
+    ResearchBatch,
+    Run,
+    RunStats,
+    Scope,
+)
 from aifreeradar.scheduler import Scheduler
 from aifreeradar.service import BusyError, TaskManager
 from aifreeradar.settings_store import SettingsStore
-from aifreeradar.storage import Repository
+from aifreeradar.storage import MESSAGE_FACT_FIELDS, Repository
 
 CHECKED = datetime(2026, 11, 1, 1, tzinfo=UTC)
 LOCAL = timezone(timedelta(hours=8))
@@ -234,7 +250,7 @@ async def test_failure_preserves_confirmed_policy_and_persists_report_after_reop
     settings, repository = runtime
     original = seed(repository, policy())[0]
     manager = TaskManager(settings, repository, Researcher(RuntimeError("provider unavailable")))
-    run = await manager.start(Scope(categories=[Category.TEXT]))
+    run = await manager.start(Scope(categories=[Category.TEXT], resource_ids=[original.id]))
     await manager.wait_idle()
     reopened = Repository(settings.data_dir)
     failed = reopened.get_run(run.id)
@@ -282,7 +298,7 @@ async def test_mixed_category_failure_keeps_verified_records_and_partial_status(
 
 
 @pytest.mark.asyncio
-async def test_missing_expected_rechecks_marks_partial_and_preserves_outside_scope(runtime):
+async def test_verification_missing_expected_rechecks_marks_partial_and_preserves_outside_scope(runtime):
     settings, repository = runtime
     first, missed, outside = seed(
         repository,
@@ -290,8 +306,14 @@ async def test_missing_expected_rechecks_marks_partial_and_preserves_outside_sco
         policy("Other Text API"),
         policy("Image API", "image"),
     )
-    manager = TaskManager(settings, repository, Researcher(ResearchBatch(resources=[policy()])))
-    run = await manager.start(Scope(categories=[Category.TEXT]))
+    manager = TaskManager(
+        settings,
+        repository,
+        Researcher(ResearchBatch(resources=[policy(resource_id=first.id)])),
+    )
+    run = await manager.start(
+        Scope(categories=[Category.TEXT], resource_ids=[first.id, missed.id])
+    )
     await manager.wait_idle()
     partial = repository.get_run(run.id)
     checked = repository.get_resource(first.id)
@@ -572,13 +594,13 @@ async def test_ignored_resource_is_never_researched_or_marked_missing(runtime):
 
 
 @pytest.mark.asyncio
-async def test_failed_run_does_not_mark_ignored_resource_incomplete(runtime):
+async def test_failed_verification_does_not_mark_ignored_resource_incomplete(runtime):
     settings, repository = runtime
     kept, ignored = seed(repository, policy(), policy("Ignored API"))
     repository.apply_review(ignored.id, "ignore")
     researcher = Researcher(blocked=True)
     manager = TaskManager(settings, repository, researcher)
-    run = await manager.start(Scope(categories=[Category.TEXT]))
+    run = await manager.start(Scope(categories=[Category.TEXT], resource_ids=[kept.id]))
     await asyncio.wait_for(researcher.entered.wait(), timeout=3)
     await manager.close()
     persisted = Repository(settings.data_dir).get_run(run.id)
@@ -621,7 +643,7 @@ async def test_ignored_resource_does_not_mask_missing_peer_or_scope_isolation(ru
     )
     repository.apply_review(ignored.id, "ignore")
     manager = TaskManager(settings, repository, Researcher(ResearchBatch()))
-    run = await manager.start(Scope(categories=[Category.TEXT]))
+    run = await manager.start(Scope(categories=[Category.TEXT], resource_ids=[kept.id]))
     await manager.wait_idle()
     saved = repository.get_run(run.id)
     assert saved is not None and saved.briefing_path is not None
@@ -632,6 +654,45 @@ async def test_ignored_resource_does_not_mask_missing_peer_or_scope_isolation(ru
     report = Path(saved.briefing_path).read_text(encoding="utf-8")
     assert ignored.service not in report
     assert kept.service in report
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_collection_run_never_marks_unreturned_history_incomplete(runtime):
+    settings, repository = runtime
+    kept, other = seed(repository, policy(), policy("Other Text API"))
+    manager = TaskManager(settings, repository, Researcher(ResearchBatch()))
+    run = await manager.start(Scope(categories=[Category.TEXT]))
+    await manager.wait_idle()
+    saved = repository.get_run(run.id)
+    assert saved is not None and saved.briefing_path is not None
+    assert saved.status == "success"
+    assert repository.get_resource(kept.id) == kept
+    assert repository.get_resource(other.id) == other
+    report = Path(saved.briefing_path).read_text(encoding="utf-8")
+    assert "本次无新增或变化" in report
+    assert "待核实线索" not in report
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_collection_failure_is_partial_without_touching_history(runtime):
+    settings, repository = runtime
+    (original,) = seed(repository, policy())
+    manager = TaskManager(
+        settings,
+        repository,
+        Researcher(ResearchBatch(failures=["搜索服务超时"])),
+    )
+    run = await manager.start(Scope(categories=[Category.TEXT]))
+    await manager.wait_idle()
+    saved = repository.get_run(run.id)
+    assert saved is not None and saved.briefing_path is not None
+    assert saved.status == "partial"
+    assert "搜索服务超时" in saved.error
+    assert repository.get_resource(original.id) == original
+    report = Path(saved.briefing_path).read_text(encoding="utf-8")
+    assert "搜索服务超时" in report
     await manager.close()
 
 
@@ -797,3 +858,534 @@ async def test_disabled_schedule_from_store_prevents_due_runs(runtime):
     assert researcher.calls == []
     assert repository.list_runs() == []
     await manager.close()
+
+
+# --- Additive zh translation (contract: originals stay authoritative) ---
+
+REAL_MODEL_TRANSLATOR = translation_module.ModelTranslator
+
+
+def english_message(service="Free Text API", **updates):
+    values = {
+        "policy": policy(
+            service,
+            free_type="ongoing",
+            quota="1000 requests per month",
+            quota_unit="requests",
+            refresh_cycle="monthly",
+            rate_limit="10 requests per minute",
+            claim_conditions="Free registration and no purchase required",
+            expiry_notes="No fixed end date",
+            region_restrictions="Available worldwide",
+            status="pending",
+        ),
+        "title": f"{service} free tier announced",
+        "summary": "Free API tier with 1000 monthly requests and no purchase required.",
+        "sources": [
+            MessageSource(
+                url="https://example.com/free-api",
+                title=f"{service} official page",
+                excerpt="Free tier with 1000 requests per month.",
+                source_type="official",
+                access="page",
+            )
+        ],
+    }
+    values.update(updates)
+    return CollectedMessage(**values)
+
+
+def english_failure_lead():
+    """A pending lead whose only unresolved detail is the English failure reason."""
+    return policy(
+        "Free Text API",
+        status="pending",
+        quota=UNKNOWN,
+        failure_reason="Official documentation does not state the free quota",
+    )
+
+
+def translation_answer(value: str) -> str:
+    return f"中文机器译文：{value}"
+
+
+def translation_model(calls, *, fail=False):
+    """Deterministic injected model: records prompts and answers fixed zh."""
+
+    def respond(messages, info):
+        text = "\n".join(
+            str(getattr(part, "content", part))
+            for message in messages
+            for part in getattr(message, "parts", ())
+        )
+        calls.append(text)
+        if fail:
+            raise RuntimeError("translation model unavailable")
+        payload = json.loads(text.strip().splitlines()[-1])
+        return ModelResponse(
+            [
+                ToolCallPart(
+                    info.output_tools[0].name,
+                    {
+                        "translations": {
+                            key: translation_answer(value) for key, value in payload.items()
+                        }
+                    },
+                )
+            ]
+        )
+
+    return FunctionModel(respond)
+
+
+def install_model_translator(monkeypatch, model):
+    """Route the service's ModelTranslator through a deterministic injected model."""
+    monkeypatch.setattr(
+        translation_module,
+        "ModelTranslator",
+        lambda settings: REAL_MODEL_TRANSLATOR(settings, model=model),
+    )
+
+
+@pytest.mark.asyncio
+async def test_collection_translates_messages_and_lead_failure_reason(runtime, monkeypatch):
+    settings, repository = runtime
+    calls: list[str] = []
+    install_model_translator(monkeypatch, translation_model(calls))
+    seed(repository, english_failure_lead())
+    researcher = Researcher(ResearchBatch(messages=[english_message()]))
+    manager = TaskManager(settings, repository, researcher)
+    try:
+        run = await manager.start(Scope(categories=[Category.TEXT]))
+        await manager.wait_idle()
+    finally:
+        await manager.close()
+
+    saved = repository.get_run(run.id)
+    assert saved is not None
+    assert saved.status == "success"
+    assert saved.error == ""
+    (event,) = repository.list_messages(task_id=run.id, include_ended=True)
+    assert event.title == "Free Text API free tier announced"
+    assert event.title_zh == translation_answer(event.title)
+    assert event.summary_zh == translation_answer(event.summary)
+    assert event.policy.quota == "1000 requests per month"
+    assert event.policy.quota_zh == translation_answer(event.policy.quota)
+    assert event.policy.claim_conditions_zh == translation_answer(event.policy.claim_conditions)
+    assert event.sources[0].excerpt == "Free tier with 1000 requests per month."
+    resource = repository.get_resource(event.resource_id)
+    assert resource is not None
+    (offer,) = resource.messages
+    assert (offer.title_zh, offer.summary_zh) == (event.title_zh, event.summary_zh)
+    assert resource.failure_reason.startswith("Official documentation does not state the free quota")
+    assert resource.failure_reason_zh == translation_answer(resource.failure_reason)
+    assert calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["model_error", "translator_error"])
+async def test_collection_succeeds_when_translation_fails(runtime, monkeypatch, mode):
+    settings, repository = runtime
+
+    class ExplodingTranslator:
+        async def translate(self, texts):
+            raise RuntimeError("translation backend down")
+
+    if mode == "model_error":
+        install_model_translator(monkeypatch, translation_model([], fail=True))
+    else:
+        monkeypatch.setattr(
+            translation_module, "ModelTranslator", lambda settings: ExplodingTranslator()
+        )
+    seed(repository, english_failure_lead())
+    researcher = Researcher(ResearchBatch(messages=[english_message()]))
+    manager = TaskManager(settings, repository, researcher)
+    try:
+        run = await manager.start(Scope(categories=[Category.TEXT]))
+        await manager.wait_idle()
+    finally:
+        await manager.close()
+
+    saved = repository.get_run(run.id)
+    assert saved is not None
+    assert saved.status == "success"
+    (event,) = repository.list_messages(task_id=run.id, include_ended=True)
+    assert event.title == "Free Text API free tier announced"
+    assert (event.title_zh, event.summary_zh, event.end_reason_zh) == ("", "", "")
+    assert event.policy.quota_zh == event.policy.claim_conditions_zh == ""
+    resource = repository.get_resource(event.resource_id)
+    assert resource is not None
+    assert resource.failure_reason.startswith("Official documentation does not state the free quota")
+    assert resource.failure_reason_zh == ""
+    (offer,) = resource.messages
+    assert (offer.title_zh, offer.summary_zh) == ("", "")
+    if mode == "translator_error":
+        assert any("机器翻译未完成，保留原文" in note for note in saved.notes)
+    else:
+        assert not any("机器翻译未完成" in note for note in saved.notes)
+
+
+@pytest.mark.asyncio
+async def test_backfill_translates_stored_records_idempotently(runtime, monkeypatch):
+    settings, repository = runtime
+    calls: list[str] = []
+    install_model_translator(monkeypatch, translation_model(calls))
+    seed(repository, english_failure_lead())
+    collected = Run(
+        scope=Scope(categories=[Category.TEXT]),
+        started_at=CHECKED,
+        status="success",
+        finished_at=CHECKED,
+    )
+    repository.save_run(collected)
+    (event,) = repository.apply_messages(
+        ResearchBatch(messages=[english_message()]), collected, CHECKED
+    )
+
+    manager = TaskManager(settings, repository, Researcher())
+    try:
+        first = await manager.backfill_translations()
+        assert isinstance(first, Run)
+        assert first.trigger == "manual" and first.status == "running"
+        await manager.wait_idle()
+        saved = repository.get_run(first.id)
+        assert saved is not None
+        assert saved.status == "success"
+        assert saved.finished_at is not None
+        assert saved.notes and "译文回填完成" in saved.notes[0]
+
+        (stored,) = repository.list_messages(include_ended=True)
+        assert stored.id == event.id
+        assert stored.title_zh == translation_answer(stored.title)
+        assert stored.summary_zh == translation_answer(stored.summary)
+        resource = repository.get_resource(event.resource_id)
+        assert resource is not None
+        (offer,) = resource.messages
+        assert offer.title_zh == stored.title_zh
+        assert offer.summary_zh == stored.summary_zh
+        assert resource.failure_reason.startswith(
+            "Official documentation does not state the free quota"
+        )
+        assert resource.failure_reason_zh == translation_answer(resource.failure_reason)
+
+        first_calls = len(calls)
+        assert first_calls
+
+        second = await manager.backfill_translations()
+        assert second.trigger == "manual"
+        await manager.wait_idle()
+        replay = repository.get_run(second.id)
+        assert replay is not None and replay.status == "success"
+        assert replay.notes and replay.notes[0].startswith("译文回填完成")
+        assert len(calls) == first_calls, "unchanged originals must never be re-translated"
+        again = repository.get_resource(event.resource_id)
+        assert again is not None
+        (again_offer,) = again.messages
+        assert again_offer.title_zh == offer.title_zh
+        assert again_offer.summary_zh == offer.summary_zh
+        assert again.failure_reason_zh == resource.failure_reason_zh
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_backfill_translations_rejects_active_research(runtime, monkeypatch):
+    settings, repository = runtime
+    calls: list[str] = []
+    install_model_translator(monkeypatch, translation_model(calls))
+    researcher = Researcher(blocked=True)
+    manager = TaskManager(settings, repository, researcher)
+    try:
+        await manager.start(Scope(categories=[Category.TEXT]))
+        await asyncio.wait_for(researcher.entered.wait(), timeout=3)
+        with pytest.raises(BusyError):
+            await manager.backfill_translations()
+        assert len(repository.list_runs()) == 1
+        assert calls == []
+        researcher.release.set()
+        await manager.wait_idle()
+        backfill = await manager.backfill_translations()
+        await manager.wait_idle()
+        saved = repository.get_run(backfill.id)
+        assert saved is not None and saved.status == "success"
+    finally:
+        researcher.release.set()
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_backfill_translations_rejects_a_second_backfill(runtime, monkeypatch):
+    settings, repository = runtime
+    collected = Run(
+        scope=Scope(categories=[Category.TEXT]),
+        started_at=CHECKED,
+        status="success",
+        finished_at=CHECKED,
+    )
+    repository.save_run(collected)
+    repository.apply_messages(ResearchBatch(messages=[english_message()]), collected, CHECKED)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def respond(messages, info):
+        entered.set()
+        await release.wait()
+        return ModelResponse([ToolCallPart(info.output_tools[0].name, {"translations": {}})])
+
+    install_model_translator(monkeypatch, FunctionModel(respond))
+    manager = TaskManager(settings, repository, Researcher())
+    try:
+        first = await manager.backfill_translations()
+        await asyncio.wait_for(entered.wait(), timeout=3)
+        with pytest.raises(BusyError):
+            await manager.backfill_translations()
+        release.set()
+        await manager.wait_idle()
+        saved = repository.get_run(first.id)
+        assert saved is not None and saved.status == "success"
+    finally:
+        release.set()
+        await manager.close()
+
+
+def test_zh_fields_never_enter_message_change_detection(runtime):
+    _settings, repository = runtime
+    assert MESSAGE_FACT_FIELDS == (
+        "free_type",
+        "quota",
+        "quota_unit",
+        "refresh_cycle",
+        "rate_limit",
+        "claim_conditions",
+        "payment_required",
+        "payment_method_required",
+        "expires_at",
+        "expiry_notes",
+        "region_restrictions",
+        "china_policy",
+        "models",
+    )
+    assert not any(name.endswith("_zh") for name in MESSAGE_FACT_FIELDS)
+
+    message = english_message()
+    first_run = Run(
+        scope=Scope(categories=[Category.TEXT]),
+        started_at=CHECKED,
+        status="success",
+        finished_at=CHECKED,
+    )
+    repository.save_run(first_run)
+    (first,) = repository.apply_messages(ResearchBatch(messages=[message]), first_run, CHECKED)
+    assert first.kind == "new"
+    repository.save_news_translations(
+        [first.model_copy(update={"title_zh": "免费层级发布", "summary_zh": "每月一千次免费请求"})]
+    )
+
+    translated = message.model_copy(
+        update={
+            "title_zh": "免费层级发布",
+            "summary_zh": "每月一千次免费请求",
+            "policy": message.policy.model_copy(update={"quota_zh": "每月一千次请求"}),
+        }
+    )
+    second_run = Run(
+        scope=Scope(categories=[Category.TEXT]),
+        started_at=CHECKED + timedelta(days=1),
+        status="success",
+        finished_at=CHECKED + timedelta(days=1),
+    )
+    repository.save_run(second_run)
+    assert (
+        repository.apply_messages(
+            ResearchBatch(messages=[translated]), second_run, CHECKED + timedelta(days=1)
+        )
+        == []
+    )
+    (unchanged,) = repository.list_messages(include_ended=True)
+    assert unchanged.kind == "new"
+    assert unchanged.title_zh == "免费层级发布"
+
+    changed = translated.model_copy(
+        update={"policy": translated.policy.model_copy(update={"quota": "2000 requests per month"})}
+    )
+    third_run = Run(
+        scope=Scope(categories=[Category.TEXT]),
+        started_at=CHECKED + timedelta(days=2),
+        status="success",
+        finished_at=CHECKED + timedelta(days=2),
+    )
+    repository.save_run(third_run)
+    (event,) = repository.apply_messages(
+        ResearchBatch(messages=[changed]), third_run, CHECKED + timedelta(days=2)
+    )
+    assert event.kind == "changed"
+    assert event.policy.quota == "2000 requests per month"
+    assert event.policy.quota_zh == "每月一千次请求"
+
+
+class SourceResearcher(Researcher):
+    async def collect_sources(self, resources):
+        return await self.research(Scope(), resources)
+
+
+@pytest.mark.asyncio
+async def test_source_backfill_recovers_local_first_and_targets_only_remaining_missing(runtime, monkeypatch):
+    settings, repository = runtime
+    calls: list[str] = []
+    install_model_translator(monkeypatch, translation_model(calls))
+    original = {
+        resource.service: resource for resource in seed(
+            repository,
+            policy("Local API"),
+            policy("Missing API", status="pending", evidence=[]),
+            policy("Ignored API", status="pending", evidence=[]),
+        )
+    }
+    repository.apply_review(original["Ignored API"].id, "ignore")
+    collected = Run(
+        scope=Scope(categories=[Category.TEXT]),
+        started_at=CHECKED,
+        status="success",
+        finished_at=CHECKED,
+    )
+    repository.save_run(collected)
+    repository.apply_messages(
+        ResearchBatch(messages=[english_message("Local API")]), collected, CHECKED
+    )
+    local_after_seed = repository.get_resource(original["Local API"].id)
+    missing = original["Missing API"]
+    message = english_message("Missing API")
+    message.policy.resource_id = missing.id
+    message.policy.free_type = FreeType.UNKNOWN
+    message.policy.api_url = UNKNOWN
+    message.policy.quota = UNKNOWN
+    message.policy.payment_required = None
+    message.policy.payment_method_required = None
+    researcher = SourceResearcher(ResearchBatch(messages=[message]))
+    real_recover = repository.recover_legacy_messages
+    order: list[str] = []
+    real_collect = researcher.collect_sources
+
+    async def collect(resources):
+        order.append("collect")
+        return await real_collect(resources)
+
+    researcher.collect_sources = collect
+    monkeypatch.setattr(
+        repository, "recover_legacy_messages",
+        lambda: order.append("recover") or real_recover(),
+    )
+    manager = TaskManager(settings, repository, researcher)
+    try:
+        run = await manager.backfill_sources()
+        assert run.scope.resource_ids == []
+        await manager.wait_idle()
+        saved = repository.get_run(run.id)
+        assert saved is not None and saved.status == "success" and not saved.error
+        assert saved.stats == researcher.last_stats
+        (supplied,) = researcher.calls[0][1]
+        assert supplied.id == missing.id and supplied.category == missing.category
+        assert order == ["recover", "collect"]
+        assert repository.get_resource(original["Local API"].id) == local_after_seed
+        restored = repository.get_resource(missing.id)
+        assert restored is not None and restored.messages[0].sources
+        assert restored.first_seen_at == missing.first_seen_at
+        assert restored.status == missing.status
+        assert restored.last_success_at == missing.last_success_at
+        assert repository.get_resource(original["Ignored API"].id) == original["Ignored API"]
+        (event,) = repository.list_messages(task_id=run.id, include_ended=True)
+        assert event.discovered_at == missing.first_seen_at
+        assert event.title_zh
+
+        again = await manager.backfill_sources()
+        await manager.wait_idle()
+        repeated = repository.get_run(again.id)
+        assert repeated is not None and repeated.status == "success"
+        assert repeated.stats == RunStats()
+        assert len(researcher.calls) == 1
+        assert repository.list_messages(task_id=again.id, include_ended=True) == []
+    finally:
+        await manager.close()
+@pytest.mark.asyncio
+async def test_source_backfill_without_recoverable_sources_preserves_lead_without_failure(runtime):
+    settings, repository = runtime
+    (original,) = seed(repository, policy("Unknown API", evidence=[], status="pending"))
+    researcher = SourceResearcher(ResearchBatch(notes=["No matching source report was observed"]))
+    manager = TaskManager(settings, repository, researcher)
+    try:
+        run = await manager.backfill_sources()
+        await manager.wait_idle()
+        saved = repository.get_run(run.id)
+        assert saved is not None and saved.status == "success" and not saved.error
+        assert saved.stats == researcher.last_stats and saved.notes
+        assert repository.get_resource(original.id) == original
+        assert repository.list_messages(include_ended=True) == []
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_before_start", [False, True])
+async def test_source_backfill_cancellation_releases_shared_lock_without_policy_recheck(runtime, cancel_before_start):
+    settings, repository = runtime
+    (original,) = seed(repository, policy("Unknown API", evidence=[], status="pending"))
+    researcher = SourceResearcher(blocked=True)
+    manager = TaskManager(settings, repository, researcher)
+    other = TaskManager(settings, repository, SourceResearcher())
+    try:
+        run = await manager.backfill_sources()
+        if not cancel_before_start:
+            await asyncio.wait_for(researcher.entered.wait(), timeout=3)
+        with pytest.raises(BusyError):
+            await manager.start(Scope())
+        with pytest.raises(BusyError):
+            await manager.backfill_translations()
+        with pytest.raises(BusyError):
+            await manager.backfill_sources()
+        with pytest.raises(BusyError):
+            await other.backfill_sources()
+        await manager.close()
+        saved = repository.get_run(run.id)
+        assert saved is not None and saved.status == "failed" and saved.finished_at is not None
+        assert repository.get_resource(original.id) == original
+        following = await other.backfill_sources()
+        await other.wait_idle()
+        assert repository.get_run(following.id).status == "success"
+    finally:
+        await manager.close()
+        await other.close()
+
+
+@pytest.mark.asyncio
+async def test_source_backfill_recreates_production_researcher_with_each_settings_snapshot(runtime, monkeypatch):
+    settings, repository = runtime
+    seed(repository, policy("Unknown API", evidence=[], status="pending"))
+    store = store_for(settings, repository)
+    instances = []
+
+    constructed = asyncio.Event()
+    class SnapshotResearcher(SourceResearcher):
+        def __init__(self, snapshot):
+            super().__init__(blocked=not instances)
+            self.snapshot = snapshot
+            instances.append(self)
+            constructed.set()
+
+    monkeypatch.setattr("aifreeradar.research.HarnessResearcher", SnapshotResearcher)
+    manager = TaskManager(settings, repository, settings_store=store)
+    try:
+        first = await manager.backfill_sources()
+        # Let production construction enter its blocked source request.
+        await asyncio.wait_for(constructed.wait(), timeout=3)
+        await asyncio.wait_for(instances[0].entered.wait(), timeout=3)
+        before = instances[0].snapshot.model
+        store.update({"model": "openai:new-model"}, {}, store.version)
+        assert instances[0].snapshot.model == before
+        instances[0].release.set()
+        await manager.wait_idle()
+        assert repository.get_run(first.id).status == "success"
+        second = await manager.backfill_sources()
+        await manager.wait_idle()
+        assert repository.get_run(second.id).status == "success"
+        assert len(instances) == 2 and instances[1].snapshot.model == "openai:new-model"
+    finally:
+        await manager.close()

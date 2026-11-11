@@ -205,7 +205,13 @@ def render_report(
     if meta.get("model"):
         lines.append(f"- 模型: {meta['model']}")
     if meta.get("resource_count") is not None:
-        lines.append(f"- 研究产出资源: {meta['resource_count']}")
+        lines.append(f"- 研究产出记录: {meta['resource_count']}")
+    if meta.get("verified_count") is not None:
+        lines.append(f"- 其中严格核验政策: {meta['verified_count']}")
+    if meta.get("message_count") is not None:
+        lines.append(f"- 其中收集消息（未核验）: {meta['message_count']}")
+    if meta.get("message_count") and not meta.get("verified_count"):
+        lines.append("- 覆盖仅表示来源记录已收集，不代表官方政策核验通过")
     lines.extend(["", "## 类别覆盖", ""])
     lines.extend(["| 类别 | 已覆盖 | 缺失 | 目标数 |", "|---|---|---|---|"])
     missing_rows: list[dict[str, Any]] = []
@@ -304,15 +310,18 @@ def main(argv: list[str] | None = None) -> int:
         researcher = HarnessResearcher(runtime)
         batch = asyncio.run(researcher.research(runtime.default_scope, []))
         discoveries = getattr(researcher, "last_discoveries", []) or []
+        policies = [*batch.resources, *(message.policy for message in batch.messages)]
         run_meta: dict[str, Any] = {
             "config": config_name,
             "model": runtime.model,
-            "resource_count": len(batch.resources),
+            "resource_count": len(policies),
+            "verified_count": len(batch.resources),
+            "message_count": len(batch.messages),
             "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
         if batch.failures:
             run_meta["note"] = "研究存在失败分段: " + "; ".join(batch.failures)
-        report = render_report(targets, batch.resources, discoveries, run_meta)
+        report = render_report(targets, policies, discoveries, run_meta)
 
         if args.out is None:
             out_path = Path("data") / "tmp-stats" / datetime.now().strftime(OUTPUT_PATTERN)

@@ -85,6 +85,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Messages */
+        get: operations["messages_api_messages_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/resources": {
         parameters: {
             query?: never;
@@ -182,6 +199,40 @@ export interface paths {
         put?: never;
         /** Start Task */
         post: operations["start_task_api_tasks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/translations/backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Backfill Translations */
+        post: operations["backfill_translations_api_translations_backfill_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/messages/backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Backfill Sources */
+        post: operations["backfill_sources_api_messages_backfill_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -348,6 +399,51 @@ export interface components {
          * @enum {string}
          */
         ChinaPolicy: "supported" | "unsupported" | "unknown";
+        /**
+         * CollectedMessage
+         * @description A source report, kept separate from officially verified policy facts.
+         */
+        CollectedMessage: {
+            policy: components["schemas"]["Policy"];
+            /**
+             * Offer Key
+             * @default default
+             */
+            offer_key: string;
+            /** Title */
+            title: string;
+            /** Summary */
+            summary: string;
+            /** Sources */
+            sources: components["schemas"]["MessageSource"][];
+            /** Published At */
+            published_at?: string | null;
+            /**
+             * Ended
+             * @default false
+             */
+            ended: boolean;
+            /**
+             * End Reason
+             * @default
+             */
+            end_reason: string;
+            /**
+             * Title Zh
+             * @default
+             */
+            title_zh: string;
+            /**
+             * Summary Zh
+             * @default
+             */
+            summary_zh: string;
+            /**
+             * End Reason Zh
+             * @default
+             */
+            end_reason_zh: string;
+        };
         /** CreateTaskRequest */
         CreateTaskRequest: {
             /** Categories */
@@ -399,6 +495,225 @@ export interface components {
         LeadRead: {
             resource: components["schemas"]["Resource"];
             review: components["schemas"]["ResourceReview"];
+        };
+        /** MessageSource */
+        MessageSource: {
+            /** Url */
+            url: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Excerpt */
+            excerpt: string;
+            /**
+             * Source Type
+             * @default search
+             * @enum {string}
+             */
+            source_type: "official" | "community" | "github" | "search";
+            /**
+             * Access
+             * @default snippet
+             * @enum {string}
+             */
+            access: "page" | "snippet";
+            /** Published At */
+            published_at?: string | null;
+        };
+        /** NewsItem */
+        NewsItem: {
+            policy: components["schemas"]["Policy"];
+            /**
+             * Offer Key
+             * @default default
+             */
+            offer_key: string;
+            /** Title */
+            title: string;
+            /** Summary */
+            summary: string;
+            /** Sources */
+            sources: components["schemas"]["MessageSource"][];
+            /** Published At */
+            published_at?: string | null;
+            /**
+             * Ended
+             * @default false
+             */
+            ended: boolean;
+            /**
+             * End Reason
+             * @default
+             */
+            end_reason: string;
+            /**
+             * Title Zh
+             * @default
+             */
+            title_zh: string;
+            /**
+             * Summary Zh
+             * @default
+             */
+            summary_zh: string;
+            /**
+             * End Reason Zh
+             * @default
+             */
+            end_reason_zh: string;
+            /** Id */
+            id?: string;
+            /** Resource Id */
+            resource_id: string;
+            /** Task Id */
+            task_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "new" | "changed" | "expired" | "restored";
+            /**
+             * Discovered At
+             * Format: date-time
+             */
+            discovered_at?: string;
+            /**
+             * First Seen At
+             * Format: date-time
+             */
+            first_seen_at?: string;
+        };
+        /** Policy */
+        Policy: {
+            /** Provider */
+            provider: string;
+            /** Service */
+            service: string;
+            category: components["schemas"]["Category"];
+            /**
+             * Provider Domain
+             * @default
+             */
+            provider_domain: string;
+            /**
+             * Service Key
+             * @default
+             */
+            service_key: string;
+            /** Resource Id */
+            resource_id?: string | null;
+            /** Aliases */
+            aliases?: string[];
+            /** Models */
+            models?: string[];
+            /**
+             * Api Url
+             * @default 未说明
+             */
+            api_url: string;
+            /**
+             * Docs Url
+             * @default 未说明
+             */
+            docs_url: string;
+            /** @default unknown */
+            free_type: components["schemas"]["FreeType"];
+            /**
+             * Quota
+             * @default 未说明
+             */
+            quota: string;
+            /**
+             * Quota Unit
+             * @default 未说明
+             */
+            quota_unit: string;
+            /**
+             * Refresh Cycle
+             * @default 未说明
+             */
+            refresh_cycle: string;
+            /**
+             * Rate Limit
+             * @default 未说明
+             */
+            rate_limit: string;
+            /**
+             * Claim Conditions
+             * @default 未说明
+             */
+            claim_conditions: string;
+            /** Payment Required */
+            payment_required?: boolean | null;
+            /** Payment Method Required */
+            payment_method_required?: boolean | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /**
+             * Expiry Notes
+             * @default 未说明
+             */
+            expiry_notes: string;
+            /**
+             * Region Restrictions
+             * @default 未说明
+             */
+            region_restrictions: string;
+            /** @default unknown */
+            china_policy: components["schemas"]["ChinaPolicy"];
+            /** Evidence */
+            evidence?: components["schemas"]["Evidence"][];
+            /** @default pending */
+            status: components["schemas"]["ResourceStatus"];
+            /** @default success */
+            check_status: components["schemas"]["CheckStatus"];
+            /**
+             * Failure Reason
+             * @default
+             */
+            failure_reason: string;
+            /**
+             * Quota Zh
+             * @default
+             */
+            quota_zh: string;
+            /**
+             * Quota Unit Zh
+             * @default
+             */
+            quota_unit_zh: string;
+            /**
+             * Refresh Cycle Zh
+             * @default
+             */
+            refresh_cycle_zh: string;
+            /**
+             * Rate Limit Zh
+             * @default
+             */
+            rate_limit_zh: string;
+            /**
+             * Claim Conditions Zh
+             * @default
+             */
+            claim_conditions_zh: string;
+            /**
+             * Expiry Notes Zh
+             * @default
+             */
+            expiry_notes_zh: string;
+            /**
+             * Region Restrictions Zh
+             * @default
+             */
+            region_restrictions_zh: string;
+            /**
+             * Failure Reason Zh
+             * @default
+             */
+            failure_reason_zh: string;
         };
         /** Resource */
         Resource: {
@@ -489,6 +804,46 @@ export interface components {
              * @default
              */
             failure_reason: string;
+            /**
+             * Quota Zh
+             * @default
+             */
+            quota_zh: string;
+            /**
+             * Quota Unit Zh
+             * @default
+             */
+            quota_unit_zh: string;
+            /**
+             * Refresh Cycle Zh
+             * @default
+             */
+            refresh_cycle_zh: string;
+            /**
+             * Rate Limit Zh
+             * @default
+             */
+            rate_limit_zh: string;
+            /**
+             * Claim Conditions Zh
+             * @default
+             */
+            claim_conditions_zh: string;
+            /**
+             * Expiry Notes Zh
+             * @default
+             */
+            expiry_notes_zh: string;
+            /**
+             * Region Restrictions Zh
+             * @default
+             */
+            region_restrictions_zh: string;
+            /**
+             * Failure Reason Zh
+             * @default
+             */
+            failure_reason_zh: string;
             /** Id */
             id?: string;
             /**
@@ -510,6 +865,8 @@ export interface components {
             last_task_id: string;
             /** Recommended At */
             recommended_at?: string | null;
+            /** Messages */
+            messages?: components["schemas"]["CollectedMessage"][];
         };
         /** ResourceDetailRead */
         ResourceDetailRead: {
@@ -519,6 +876,8 @@ export interface components {
             review: components["schemas"]["ResourceReview"];
             /** Actions */
             actions: components["schemas"]["UserAction"][];
+            /** Messages */
+            messages?: components["schemas"]["NewsItem"][];
         };
         /**
          * ResourceReview
@@ -720,6 +1079,8 @@ export interface components {
             run: components["schemas"]["RunRead"];
             /** Changes */
             changes: components["schemas"]["Change"][];
+            /** Messages */
+            messages?: components["schemas"]["NewsItem"][];
         };
         /** UserAction */
         UserAction: {
@@ -972,12 +1333,46 @@ export interface operations {
             };
         };
     };
+    messages_api_messages_get: {
+        parameters: {
+            query?: {
+                category?: string;
+                include_ended?: boolean;
+                resource_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NewsItem"][];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
     resources_api_resources_get: {
         parameters: {
             query?: {
                 category?: string;
                 china_policy?: string;
                 status?: string;
+                include_ended?: boolean;
             };
             header?: never;
             path?: never;
@@ -1211,6 +1606,64 @@ export interface operations {
             };
             /** @description Unprocessable Entity */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    backfill_translations_api_translations_backfill_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunRead"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    backfill_sources_api_messages_backfill_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunRead"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

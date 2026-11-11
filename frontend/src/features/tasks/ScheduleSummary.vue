@@ -16,7 +16,10 @@ const regionText = computed(() => labelFor(props.app, props.app.default_scope.re
 
 <template>
   <section class="panel" aria-labelledby="schedule-heading">
-    <h2 id="schedule-heading">每日默认计划</h2>
+    <h2 id="schedule-heading">每日默认收集计划</h2>
+    <p class="muted">
+      默认按类别收集新的免费消息与更新，不自动核验已有资源。严格核验只在任务中指定资源标识时执行。
+    </p>
     <FactsList>
       <dt>定时状态</dt>
       <dd>{{ app.schedule_enabled ? '已启用' : '已停用' }}</dd>
@@ -26,8 +29,10 @@ const regionText = computed(() => labelFor(props.app, props.app.default_scope.re
       <dd>{{ categoryText }}</dd>
       <dt>默认地区条件</dt>
       <dd>{{ regionText }}</dd>
+      <dt>默认模式</dt>
+      <dd>收集（不自动核验）</dd>
     </FactsList>
     <p class="muted">程序运行时才能执行计划。错过时刻后，下次启动最多补跑一次，不按离线天数逐天补齐。同日已完成的定时任务不会因重启重复运行。</p>
-    <p class="muted">计划与默认范围在本地配置文件中设置。下方选择只用于本次手动任务。</p>
+    <p class="muted">计划与默认范围在本地配置文件中设置。下方选择只用于本次手动任务；如需核验，请填写资源标识。</p>
   </section>
 </template>

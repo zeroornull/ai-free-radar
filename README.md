@@ -1,8 +1,8 @@
 # AIFreeRadar
 
-本机使用的免费 AI API 研究应用：通过可配置的模型与搜索服务发现线索，读取原始网页，整理官方免费政策，并保存完整资源库和带引用的增量简报。覆盖文本、图像、视频、语音、Embedding、Rerank 六类 API。
+本机使用的免费 AI API 消息雷达：每日或手动轻量收集有来源的免费机会，首页展示增量消息，资源库保存各服务与活动的持续记录，需要时再核验官方政策。覆盖文本、图像、视频、语音、Embedding、Rerank 六类 API，不收录仅能网页交互的工具。
 
-“有效 / 已核实”只表示公开免费政策符合收录条件。所有推荐均为**未实测调用**，网络访问为**未实测**；应用不会自动注册、登录、领取权益或调用候选 API。项目不会预置伪造的官方资源，首次资源清单由真实研究生成。
+官方页面、社区帖子、GitHub 和搜索结果摘要均可作为收集来源：只要有安全、可追溯的 HTTP(S) 链接提到免费 AI API 权益，即可收录，不要求逐字段官方原文证据。额度、有效期、领取或支付条件未知时显示“未说明”；允许要求绑卡，排除明确要求付款、购买或充值的权益。收录只表示发现了一条消息，不保证来源准确，也不代表政策已核验。所有资源均为**未实测调用**，网络访问为**未实测**；应用不会自动注册、登录、领取权益或调用候选 API，也不会预置伪造的官方资源。
 
 ## 安装与启动
 
@@ -34,7 +34,9 @@ pnpm --dir frontend build
 uv run aifreeradar
 ```
 
-打开 <http://127.0.0.1:8765>。不必激活 `.venv`；`uv run` 使用项目环境。程序仅监听 `127.0.0.1`，不提供注册、登录、局域网或公网访问。关闭终端或按 Ctrl+C 后停止服务与调度。
+打开 <http://127.0.0.1:18765>。不必激活 `.venv`；`uv run` 使用项目环境。程序仅监听 `127.0.0.1`，不提供注册、登录、局域网或公网访问。关闭终端或按 Ctrl+C 后停止服务与调度。
+
+默认端口选在 15000 以上，降低与 Windows 动态端口及保留区间冲突的概率。若端口仍被占用，修改 `config.toml` 的 `port`，开发代理同步设置 `AIFREERADAR_API_TARGET`。
 
 已构建的发布包（wheel/sdist）运行只依赖 Python 与打包时包含的产物，不再需要 Node 或前端构建步骤；`hatch build` 会校验 `index.html` 与 JS/CSS 资产存在并拒绝缺失产物的包。前端的 `index.html` 与 JS/CSS 资产由应用同源托管。
 
@@ -55,20 +57,20 @@ uv run aifreeradar
 2. 启动时读取的 `config.toml`（或 `AIFREERADAR_CONFIG` 指定的路径）。每次启动都会重新读取它作为默认值，程序从不写回。
 3. 数据库中的覆盖：某字段一旦存在覆盖行就以它为准；写入 `null` 会删除该覆盖并回落到 `config.toml`。覆盖在重启后继续生效。
 
-`/settings` 页面展示合并后的生效值和每个字段的来源（数据库、`config.toml` 或默认值），并允许修改模型、模型端点、密钥变量名、搜索服务、定时开关与时间、默认范围。页面只写数据库，不改动 `config.toml`；`host`、`port`、`data_dir` 只读。保存时先整体校验，再在单个事务内写入，版本不一致返回冲突，需刷新后重试。保存与探测是两步，探测失败不会写库。正在进行的研究任务使用启动时快照，页面修改只影响之后的运行与触发点；调度时间或开关的变更不补跑当天。
+`/settings` 页面展示合并后的生效值和每个字段的来源（数据库、`config.toml` 或默认值），并允许修改模型、模型端点、密钥变量名、搜索服务、定时开关与时间、默认范围。页面只写数据库，不改动 `config.toml`；`host`、`port`、`data_dir` 只读。保存时先整体校验，再在单个事务内写入，版本不一致返回冲突，需刷新后重试。保存与探测是两步，探测失败不会写库。正在进行的收集任务使用启动时快照，页面修改只影响之后的运行与触发点；调度时间或开关的变更不补跑当天。
 
 密钥优先级：数据库中的加密密钥（按当前 `model_api_key_env` / `search_api_key_env` 对应的变量名匹配）> `config.toml` 中的 `model_api_key` / `search_api_key` 明文 > 同名环境变量（含 `.env`）。页面写入的密钥以 AES-256-GCM 加密后存库，主密钥来自 `AIFREERADAR_SECRET_KEY`。页面从不回传密钥明文，只返回是否已配置及来源；清空密钥请提交 `null`，空字符串不是有效值。
 
 ### 开发代理
 
-前端开发服务器（`pnpm --dir frontend dev`，监听 `127.0.0.1:5173`）把 `/api` 与 `/health` 代理到后端，并把代理请求的 `Origin` 改写为后端地址，因此开发时默认无需任何环境变量：
+前端开发服务器（`pnpm --dir frontend dev`，监听 `127.0.0.1:15173`）把 `/api` 与 `/health` 代理到后端，并把代理请求的 `Origin` 改写为后端地址，因此开发时默认无需任何环境变量：
 
 ```powershell
-uv run aifreeradar          # 终端一：后端，默认 127.0.0.1:8765
+uv run aifreeradar          # 终端一：后端，默认 127.0.0.1:18765
 pnpm --dir frontend dev     # 终端二：开发服务器
 ```
 
-浏览器访问 <http://127.0.0.1:5173>，编辑即时热更新，写请求经代理后按同源处理。后端不在默认端口时设置 `AIFREERADAR_API_TARGET`（必须是 127.0.0.1/localhost 的 http 回环源，不允许账号、路径、查询或片段）。只有绕过代理、从浏览器直接向另一端口发写请求时，后端才需要 `AIFREERADAR_DEV_ORIGIN=http://127.0.0.1:5173`；未设置时这种跨端口直发一律 403。代理只存在于开发服务器，正式同源托管与生产构建不受影响。
+浏览器访问 <http://127.0.0.1:15173>，编辑即时热更新，写请求经代理后按同源处理。后端不在默认端口时设置 `AIFREERADAR_API_TARGET`（必须是 127.0.0.1/localhost 的 http 回环源，不允许账号、路径、查询或片段）。只有绕过代理、从浏览器直接向另一端口发写请求时，后端才需要 `AIFREERADAR_DEV_ORIGIN=http://127.0.0.1:15173`；未设置时这种跨端口直发一律 403。代理只存在于开发服务器，正式同源托管与生产构建不受影响。
 
 ## 配置示例
 
@@ -83,7 +85,7 @@ search_api_key_env = ""
 schedule_enabled = true
 schedule_time = "09:00"
 host = "127.0.0.1"
-port = 8765
+port = 18765
 
 # [direct_sources]
 # text = ["https://platform.openai.com/docs/pricing"]
@@ -94,9 +96,9 @@ categories = ["text", "image", "video", "speech", "embedding", "rerank"]
 region = "global"
 ```
 
-`region` 只能取 `global` 或 `china`，类别至少选择一项。`china` 指研究中国大陆官方注册和使用政策，不表示实际网络可达。官方未说明的线索保留为待核实。
+`region` 只能取 `global` 或 `china`，类别至少选择一项。`china` 是中国大陆相关政策的研究范围，不表示实际网络可达；中国大陆条件未知的免费消息仍可收集并明确标注未知。只有官方依据才能支持“官方支持中国大陆注册及使用 API”的核验结论。
 
-`direct_sources` 是可选的本机配置，按类别列出官方免费政策入口页（例如 pricing 或文档首页）。它只能写在 `config.toml`，不能通过 `/settings` 编辑；键必须是上面的类别名，值必须是绝对 HTTP(S) 地址。留空或省略即关闭直连来源。
+`direct_sources` 是可选的本机配置，按类别列出官方免费政策入口页（例如 pricing 或文档首页），用于补充发现，并不限制收集只能来自官方。它只能写在 `config.toml`，不能通过 `/settings` 编辑；键必须是上面的类别名，值必须是绝对 HTTP(S) 地址。留空或省略即关闭直连来源。
 
 模型示例（替换顶层相应字段，放在 `[default_scope]` **之前**）：
 
@@ -122,7 +124,7 @@ search_api_key_env = "EXA_API_KEY"
 schedule_enabled = true
 schedule_time = "09:00"
 host = "127.0.0.1"
-port = 8765
+port = 18765
 
 [default_scope]
 categories = ["text", "image", "video", "speech", "embedding", "rerank"]
@@ -151,34 +153,37 @@ EXA_API_KEY=你的 Exa 密钥
 | `brave` | `"BRAVE_API_KEY"` | `BRAVE_API_KEY=实际密钥` |
 | `exa` | `"EXA_API_KEY"` | `EXA_API_KEY=实际密钥` |
 
-例如选择 Exa 就设置 `search_provider = "exa"` 和 `search_api_key_env = "EXA_API_KEY"`。请求发往 `https://api.exa.ai/search`，只要高亮片段作为发现线索，不把 Exa 摘要当作官方依据。搜索请求失败或密钥缺失时记录失败，**不会回退到 DuckDuckGo、原生模型搜索或另一搜索服务**。服务可用性、限额和费用由相应账号与提供商决定。
+例如选择 Exa 就设置 `search_provider = "exa"` 和 `search_api_key_env = "EXA_API_KEY"`。请求发往 `https://api.exa.ai/search`，使用高亮片段发现消息；保留的摘要必须标注为搜索摘要，不能冒充已读取的网页或已核验官方政策。搜索请求失败或密钥缺失时记录失败，**不会回退到 DuckDuckGo、原生模型搜索或另一搜索服务**。服务可用性、限额和费用由相应账号与提供商决定。
 
-每个类别的发现段在交给研究 Agent 之前，先执行 6 条固定基线查询（3 条中文、3 条英文），计入每段 16 次搜索预算，Agent 仍可在此之上追加查询；基线查询失败只记录失败，不回退搜索服务。若配置了 `direct_sources`，同一发现段还会抓取该类别的官方入口页，遵循 robots.txt 与每域约 1 秒的间隔，只跟进一跳链接，合计最多 8 个入口页，并与 Agent 共用每段 32 次抓取预算。入口页与白名单域名下的链接记为官方可核验线索，其余只作发现线索。本轮线索（来源类别、发现方式、搜索服务与查询词）写入数据库，在简报与待核实线索中标注。
+每个类别的发现段在交给研究 Agent 之前，先执行 6 条固定基线查询（3 条中文、3 条英文），计入每段 16 次搜索预算，Agent 仍可在此之上追加查询；基线查询失败只记录失败，不回退搜索服务。若配置了 `direct_sources`，同一发现段还会抓取该类别的官方入口页，遵循 robots.txt 与每域约 1 秒的间隔，只跟进一跳链接，合计最多 8 个入口页，并与 Agent 共用每段 32 次抓取预算。实际搜索结果及实际读取的页面分别记录来源；抓取失败时可保留本次真实观察到的搜索摘要，并注明其来源与访问方式。
 
 ## 使用与记录含义
 
-资源库可按类别、中国大陆政策及资源状态筛选，详情展示关键政策、来源、核查时间和重要变化历史。显示筛选不改变研究配置。任务页可临时选择类别与地区，手动任务的选择不修改每日默认范围。简报历史按任务保存，可查看并下载对应 Markdown；同一天的多次任务各自保存文件。
+首页“消息动态”展示当前免费机会的新增、重要变化和恢复消息，可按类别筛选并切换查看已结束历史。消息展示免费摘要、已知条件与未知项、绑卡要求、来源类型及页面/摘要标识；有发布时间时显示发布时间，否则明确显示发现时间。日期较旧仅表示消息年龄，不自动判定结束。
 
-收录门槛是领取及使用免费权益需要支付的金额为零。持续免费与零支付限时赠额分别记录；付款、充值或绑定支付方式才能获得的权益不进入正式推荐。额度保留原单位，不把 Token、请求次数、图片张数或时长混为一谈。同一平台不同 API 服务各自记录政策。
+资源库维护提供商及具体 API 服务，每个服务可有多个独立活动。有来源消息的资源以“已收录”为主状态，未知条件不阻止正常展示；没有可追溯消息的旧记录标为“历史线索·来源待补”。详情优先展示最新消息、来源及活动历史，官方政策核验是可选操作，未执行或未通过时附加“未经核验”。内部政策状态 `pending`、`active`、`expired` 仍分别表示未核验、政策已核验及有失效结论，不能当作消息收录门槛。收集不会覆盖既有核验证据或最后成功核验时间，额度保留原单位。
 
-- 资源状态：`active` 有效、`pending` 待核实、`expired` 已失效。
-- 本次核查结果：`success` 成功、`failed` 失败、`incomplete` 未完成，与资源状态分别记录。
-- 免费形式：`ongoing` 持续免费、`limited` 限时免费、`unknown` 待核实。
-- 中国大陆政策：`supported` 官方支持、`unsupported` 不支持、`unknown` 未核实。中文页面或第三方推荐不能单独证明官方支持。
-- 任务状态：`running` 运行中、`success` 成功、`partial` 部分完成、`failed` 失败。
-- 人工判断：`open` 未处理、`confirmed` 已确认、`rejected` 已驳回、`ignored` 已忽略；另可收藏与备注。
+同一服务、同一活动的转发或重复报道合并来源，不因标题改写、时间或链接变化重复发消息。额度、模型、领取条件、支付条件、地区或有效期等实质变化产生新事件；不同活动分别保留。新报告中的未知值不抹掉此前已知内容。只有来源明确结束或明确的到期日期已过才结束活动；抓取失败、长期没更新或本次未搜到均不构成结束证据。当前列表默认隐藏已结束活动，历史仍可查看；资源全部活动已结束时默认从当前资源库隐藏。
 
-正式推荐需要可追溯的官方依据，关键字段关联引文及核查时间；社区内容只作为线索。应用核对引文是否出现在实际读取的网页、来源域与对应政策是否相符，模型声称“官方”不能替代来源验证。未知字段保留“未说明 / 未核实”。网页打不开、网络或模型失败时保留上次已确认政策，记录失败原因及最后成功核查时间，不能据此判定已失效。范围外资源也不会因没有被本次检查而失效。
+每日、补跑和普通手动任务按所选类别及地区轻量收集新消息和更新，不自动逐条严格复核旧资源。资源详情或线索工作台的“按需核验”只针对指定资源读取公开政策页面，不执行发现搜索，也不调用候选 API。严格核验仍要求关键事实与实际读取的官方原文相符；绑卡本身不代表付费，实际付款条件仍排除。失败保留上次政策与成功时间，并展示原因。
 
-首次简报展示本次范围内的初始清单；以后只展示新增、重要变化、失效和恢复，未变化的资源不会反复推荐。无变化时明确说明“本次无新增或变化”。待核实、核查失败与未完成事项单独列出；部分调查失败时保留已核实结果，任务标为部分完成。
+简报按任务保存，可查看并下载 Markdown，同日多次任务各自保留。收集简报只列本次新增、实质变化、结束或恢复事件，包含来源、页面/摘要标识、时间含义和未核验说明；不每天重列所有待核验资源。无变化时明确说明。缺少额度或有效期不算收集失败；真实搜索、模型或存储失败仍如实记录，部分失败保留已收集结果。
 
-简报的“待核实线索”会标注每条待核实资源的发现来源：官方目录直连、搜索查询词或目录链接；来源只是线索，官方结论仍以实际抓取的官方页面引文为准。
+资源、历史线索工作台保留确认、驳回、忽略、收藏和备注。“历史线索”只汇总尚无可追溯消息来源且人工判断仍为待处理的记录，已收录但未经核验的资源不计入来源待补数量。人工判断独立保存，不覆盖收集报告或核验证据；确认不等于政策核验。忽略的资源不参与后续收集、复核、消息流或简报，也不计入未完成事项，可重新打开。页面筛选只改变显示，任务页的临时类别和地区不修改每日默认范围。
 
-待核实与本次核查失败的资源汇总在“待核实线索”页，可按状态筛选并逐条处理：确认、驳回、忽略、收藏、写备注，或只重查这一条记录。资源详情新增人工判断面板，与研究得到的证据并排展示；判断状态、收藏和备注保存在独立表中，研究任务不会覆盖人工判断，判断也不会修改额度、有效期、支付条件、官方链接或资源状态等证据字段。忽略表示不再复查：该资源此后不会被手动、定时或补跑任务重新核查，不进入简报的任何栏目，也不计入未完成事项；重新打开后恢复处理。单资源重查只重新读取该资源的公开政策页面，不执行发现搜索，也不调用候选 API。
+“补齐存量消息”（`POST /api/messages/backfill`）先从已保存证据和历史工具结果恢复来源，仅对仍缺来源的资源使用当前配置的搜索与模型补找消息，不要求补齐额度、期限或逐字段官方证据。任务与收集、译文回填共用单写锁，重复运行跳过已收录资源；仍找不到来源的保留为“历史线索·来源待补”。从历史资料恢复的消息保留原首次发现时间，不包装成今天的新发现。旧记录、人工判断和核验信息均保留。
+
+### 中文译文（机器翻译）
+
+英文线索与消息的描述文本（标题、摘要、结束原因，以及消息内的额度、额度单位、刷新周期、限速、领取条件、有效期说明与地区限制）在收集后附加一份简体中文机器翻译，线索的失败原因同样处理；已是中文或“未说明”等占位的内容不再翻译。译文只附加、不替换：原文永久保留，页面上可展开对照。译文只读，统一标注“机器翻译，未经核验”；核验与证据一律以原文为准。提供商/服务品牌名、资源详情的政策字段、来源标题与证据引文、人工备注不翻译。
+
+翻译复用已配置的唯一模型（`model`、`model_api_key_env`、`model_base_url`），不新增服务、密钥或设置项；按原文缓存，原文未变不重译。翻译失败或返回为空时保留原文、译文留空，收集任务照常成功。译文不参与去重与实质变化判定。
+
+译文覆盖线索页、首页“消息动态”与简报：页面上有译文时中文在前、原文折叠可展开；简报双语自包含，译文在前、原文紧随，已核验政策段保持原文。线索页提供“回填译文”按钮，对已保存的英文内容发起幂等回填任务（`POST /api/translations/backfill`），进度在任务详情查看；回填与收集共用单任务约束，忙碌时拒绝并说明原因。
 
 ## 定时与数据目录
 
-默认每天本地时间 `09:00` 研究全部类别和全球资源；可修改 `schedule_time`、`default_scope`，或设置 `schedule_enabled = false`。程序必须保持运行；应用不负责开机、唤醒电脑或在退出后执行。
+默认每天本地时间 `09:00` 轻量收集全部类别和全球资源；可修改 `schedule_time`、`default_scope`，或设置 `schedule_enabled = false`。程序必须保持运行；应用不负责开机、唤醒电脑或在退出后执行。
 
 错过执行时刻后，下次启动只针对最近一个应执行日期补跑一次，不按离线天数逐日生成历史日报。同一天已有结束的定时或补跑任务（包括部分完成和失败）不会因重启反复补跑；需要重试时可手动发起。第一次在当天计划时刻之前启动不会虚构过去的任务。手动任务不占用或修改每日默认配置。
 
@@ -186,12 +191,12 @@ EXA_API_KEY=你的 Exa 密钥
 
 默认 `data_dir = "data"`，业务数据保存在该目录下：
 
-- `radar.sqlite3`：资源、证据、重要变化、任务及定时执行记录；人工判断另存于 `resource_reviews`、`user_actions` 表，发现线索存于 `lead_discoveries` 表。
+- `radar.sqlite3`：资源、收集消息及活动事件、核验证据、重要变化、任务及定时执行记录；人工判断另存于 `resource_reviews`、`user_actions` 表，发现线索存于 `lead_discoveries` 表。
 - `briefings/<任务标识>.md`：每次任务独立的 Markdown 简报。
 - Harness Memory 与工具输出目录：研究笔记、来源线索与受控工具输出，均限制在配置的数据目录内。
 - `application.lock`、`research.lock`：应用实例与研究写入锁；锁文件存在本身不表示任务仍在运行。
 
-数据库以 `PRAGMA user_version` 记录结构版本，打开时按顺序执行幂等迁移步骤。已有的 `radar.sqlite3` 会就地升级到当前版本，不需要删除或重建；升级只追加人工判断与发现线索相关表，不改变既有资源、任务与简报记录。
+数据库以 `PRAGMA user_version` 记录结构版本，打开时按顺序执行幂等迁移步骤。已有的 `radar.sqlite3` 会就地升级，不需要删除或重建；追加消息与活动历史存储，保留既有资源、原始证据、任务、变化、人工判断、设置及简报。旧记录优先从已保存的真实来源恢复消息，缺失部分可用“补齐存量消息”定向补搜；不为无来源线索编造出处，也不把历史研究笔记的转述冒充网页原文。
 
 业务资源身份和历史比较使用结构化数据库，不能只靠 Memory 是否“记得”。重启后仍可查询已经保存的资源与简报。运行中异常终止的任务在独占启动恢复时标为失败；不会伪造成功。
 
@@ -215,38 +220,17 @@ Windows 上该版本的 `LocalWorkspaceBackend` 依赖 POSIX 命令，不能作�
 
 直连来源复用同一个抓取器，继承上述地址、端口与内容类型限制，并额外遵守 robots.txt 与每域约 1 请求/秒的限速。
 
-## 验收与验证范围
+## 验证命令
 
-需求说明第 10 节有 17 个验收场景。2026-11-10 在本机执行 `uv run ruff check .`、`uv run pyright` 和 `uv run pytest -q`：Ruff 与 Pyright 均无错误；pytest 为 299 通过、1 跳过。跳过的是 Windows 上无法创建符号链接时的 Memory 路径逃逸测试，不是功能未实现。下表是场景与测试的对应关系。
-
-| 场景 | 对应测试 |
-|---|---|
-| 首次发现 | `test_official_zero_payment_policy_is_active_with_units_sources_and_times`、`test_real_agent_fetches_and_validates_official_policy`、`test_manual_http_flow_repeated_categories_unique_downloads_and_restart` |
-| 免费门槛 | `test_paid_binding_or_unknown_payment_is_not_formal_recommendation`、`test_unknown_key_conditions_are_not_inferred_free_from_evidence`、`test_limited_relative_validity_is_active_without_inventing_absolute_expiry`、`test_limited_offer_preserves_source_validity_without_invented_date` |
-| 多类别 | `test_all_six_categories_preserve_their_quota_units`、`test_same_provider_has_six_distinct_api_policies_even_with_shared_name_and_links`、`test_failed_category_preserves_other_real_agent_result` |
-| 重复研究 | `test_checked_time_and_evidence_order_do_not_duplicate_history_or_recommendation`、`test_names_and_links_can_change_without_losing_stable_resource_identity`、`test_empty_increment_briefing_explicitly_reports_no_change` |
-| 政策变化 | `test_substantive_changes_keep_before_after_time_and_field_evidence`、`test_confirmed_expiry_and_restoration_have_ordered_durable_history` |
-| 核查失败 | `test_failed_or_incomplete_recheck_preserves_last_confirmed_policy`、`test_failure_preserves_confirmed_policy_and_persists_report_after_reopen`、`test_fetch_failure_never_creates_verified_policy`、`test_missing_matching_recheck_is_explicit_and_scoped` |
-| 待核实 | `test_unverified_or_thirdparty_evidence_stays_pending`、`test_each_official_key_fact_requires_its_own_evidence`、`test_real_agent_rejects_unproven_official_evidence`、`test_documentation_link_must_itself_be_fetched` |
-| 人工判断 | `test_leads_filter_sort_default_review_and_open_leads_count`、`test_resource_review_round_trip_audit_and_idempotency`、`test_single_resource_scope_skips_discovery_and_rechecks_only_target`、`test_recheck_starts_single_resource_run_and_appears_in_openapi` |
-| 忽略语义 | `test_ignored_resource_is_never_researched_or_marked_missing`、`test_failed_run_does_not_mark_ignored_resource_incomplete`、`test_scheduled_run_honors_ignored_resources`、`test_ignored_resource_does_not_mask_missing_peer_or_scope_isolation` |
-| 地区证据 | `test_china_conclusion_requires_official_region_evidence`、`test_official_china_policy_does_not_claim_network_testing`、`test_china_briefing_keeps_unclear_official_region_as_separate_lead`、`test_mainland_support_requires_registration_and_api_use_in_fetched_text` |
-| 范围隔离 | `test_category_scope_preserves_outside_records_even_if_returned_or_not_rechecked`、`test_manual_scope_loads_only_scoped_history_without_changing_defaults`、`test_resource_filters_cover_all_categories_policies_and_statuses_without_changing_defaults`、`test_missing_expected_rechecks_marks_partial_and_preserves_outside_scope` |
-| Web 使用 | `test_manual_http_flow_repeated_categories_unique_downloads_and_restart`、`test_resource_detail_shows_evidence_changes_previous_success_and_failure`、`test_model_strings_and_markdown_never_create_executable_html_or_unsafe_links`、`test_foreign_host_or_origin_cannot_trigger_research` |
-| 定时执行 | `test_startup_after_due_catches_up_once_and_same_day_restart_is_idle`、`test_finished_schedule_statuses_do_not_rerun_on_restart`、`test_fresh_start_before_due_waits_for_normal_local_due_time`、`test_multiple_offline_days_catch_up_only_latest_due_day`、`test_custom_schedule_and_default_scope_are_used`、`test_disabled_schedule_never_runs_even_after_due_or_offline_gap`、`test_manual_busy_defers_schedule_without_consuming_due_day` |
-| 写入互斥 | `test_start_is_nonblocking_persisted_and_same_manager_rejects_overlap`、`test_separate_managers_share_one_writer_lock`、`test_external_process_filelock_blocks_without_creating_a_run`、`test_close_cancels_research_persists_failure_and_releases_writer`、`test_busy_http_task_returns_conflict_and_does_not_spawn_another_run`、`test_second_app_lifespan_cannot_recover_another_apps_running_task` |
-| 持久化 | `test_reopening_database_retains_resources_runs_evidence_history_and_same_day_reports`、`test_same_day_runs_have_unique_briefings_and_survive_reopen`、`test_real_harness_memory_roundtrip_survives_new_researcher`、`test_lifespan_recovers_interrupted_record_with_schedule_disabled`、`test_legacy_database_upgrades_in_place_and_second_open_is_a_noop`、`test_reopening_a_migrated_database_keeps_review_state_and_audit` |
-| 配置遵从 | `test_selected_model_requires_its_own_credential`、`test_compatible_model_uses_named_endpoint_not_openai`、`test_selected_search_requires_explicit_credential`、`test_exa_search_calls_only_exa`、`test_missing_model_key_fails_before_external_research`、`test_missing_selected_search_key_fails_with_real_testmodel`、`test_configured_search_failure_is_reported_by_real_tool_loop`、`test_selected_search_http_failure_never_calls_another_provider` |
-| 部分完成 | `test_mixed_category_failure_keeps_verified_records_and_partial_status`、`test_failed_category_preserves_other_real_agent_result`、`test_failed_and_partial_http_tasks_have_readable_downloadable_reports` |
-
-另有技术边界测试，不属于第 10 节的 17 行：本地与私有地址、重定向 SSRF、符号链接逃逸，以及 Windows 上真实 Harness FileStore 的读写隔离。测试使用隔离临时目录；外部模型与 HTTP 只在传输边界替换，Agent、Memory 和 FileStore 使用实际实现。
+需求说明第 10 节列出本次产品行为的验收条件。以下为开发验证命令，不表示本次改动已执行或通过；实际结果以运行记录为准。验证应使用隔离临时数据，不修改个人资源库，也不需要付费模型研究。
 
 ```powershell
 uv run pytest
 uv run ruff check .
 uv run pyright
+pnpm --dir frontend api:check
+pnpm --dir frontend typecheck
+pnpm --dir frontend build
 ```
 
-覆盖率评测（可选，真实模型与真实网络，只读）：先运行 `uv run python scripts/coverage_eval.py --dry-run` 校验 `benchmark/seed_targets.json` 与配置，再运行 `uv run python scripts/coverage_eval.py` 生成 `data/tmp-stats/coverage-<时间>.md`；评测不写入资源库，也不触发正式任务。
-
-同一环境用 Chrome 在 320px 宽度打开 `http://127.0.0.1:8765`：资源库类别筛选只改变地址，任务页仍显示全部默认类别；只选文本生成的手动任务进入任务详情，范围是“文本生成 · 全球资源”，每日默认计划仍是六类和全球。未配置 `OPENAI_API_KEY` 时任务状态为失败，原因写明缺少该变量，并生成可查看、可下载的 Markdown。任务详情页的 WCAG 2.2 A/AA 自动检查为 0 项违规。带真实密钥的外部模型研究**尚未执行**；上述失败只证明缺密钥时不会静默换服务。搜索不保证穷尽，政策也可能在核查后变化。
+覆盖率评测（可选，真实模型与真实网络，只读）：先运行 `uv run python scripts/coverage_eval.py --dry-run` 校验 `benchmark/seed_targets.json` 与配置，再运行 `uv run python scripts/coverage_eval.py` 生成 `data/tmp-stats/coverage-<时间>.md`；评测不写入资源库，也不触发正式任务。真实模型与搜索服务可能收费，正常开发验收无需运行此评测。搜索不保证穷尽，来源报告与官方政策都可能随后变化。

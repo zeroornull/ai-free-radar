@@ -41,6 +41,7 @@ from .models import (
     STATUS_LABELS,
     TRIGGER_LABELS,
     CheckStatus,
+    NewsItem,
     Resource,
     ResourceReview,
     ResourceStatus,
@@ -65,23 +66,25 @@ except PackageNotFoundError:
     APP_VERSION = "0.1.0"
 
 CATEGORIES = CATEGORY_LABELS
-RESOURCE_STATUSES = STATUS_LABELS
+RESOURCE_STATUSES = {**STATUS_LABELS, "pending": "未核验", "active": "政策已核验"}
 CHINA_POLICIES = CHINA_POLICY_LABELS
 LABELS = {
     **CATEGORY_LABELS,
-    **STATUS_LABELS,
+    **RESOURCE_STATUSES,
     **CHECK_STATUS_LABELS,
     **FREE_TYPE_LABELS,
     **CHINA_POLICY_LABELS,
     **RUN_STATUS_LABELS,
     **TRIGGER_LABELS,
     "global": "全球资源",
-    "china": "中国大陆政策研究",
-    "official": "官方依据",
+    "china": "中国大陆相关消息（可用性以来源为准）",
+    "official": "官方来源",
     "community": "社区线索",
     "new": "新增",
     "changed": "重要变化",
     "restored": "恢复",
+    "collection": "收集免费 API 消息",
+    "verification": "按需核验政策",
 }
 TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 INVALID_INPUT = "研究范围或筛选条件无效，请检查输入后重试。"
@@ -174,8 +177,15 @@ def _known_run(request: Request, task_id: str) -> Run:
     return run
 
 
+def offers_ended(resource: Resource) -> bool:
+    """A resource is history-only when every collected offer has ended explicitly."""
+    if resource.messages:
+        return all(message.ended for message in resource.messages)
+    return resource.status == ResourceStatus.EXPIRED
+
+
 def open_leads(repository) -> list[tuple[Resource, ResourceReview]]:
-    """Pending or unverified records whose human review is still open."""
+    """Historical records still awaiting a traceable source and human review."""
     resources = repository.list_resources()
     reviews = repository.reviews()
     leads: list[tuple[Resource, ResourceReview]] = []
@@ -186,7 +196,7 @@ def open_leads(repository) -> list[tuple[Resource, ResourceReview]]:
         if (
             resource.status == ResourceStatus.PENDING
             or resource.check_status != CheckStatus.SUCCESS
-        ):
+        ) and not any(message.sources for message in resource.messages):
             leads.append((resource, review))
     return leads
 
@@ -314,9 +324,27 @@ async def leads(request: Request):
     )
 
 
+@router.get("/messages", response_model=list[NewsItem], responses={422: {"model": ApiError}})
+async def messages(
+    request: Request, category: str = "", include_ended: bool = False, resource_id: str = ""
+):
+    if category and category not in CATEGORIES:
+        raise HTTPException(status_code=422, detail=INVALID_INPUT)
+    records = request.app.state.repository.list_messages(
+        category=category or None,
+        include_ended=include_ended,
+        resource_id=resource_id or None,
+    )
+    return json_response(records, request.app.state.settings)
+
+
 @router.get("/resources", response_model=list[Resource], responses={422: {"model": ApiError}})
 async def resources(
-    request: Request, category: str = "", china_policy: str = "", status: str = ""
+    request: Request,
+    category: str = "",
+    china_policy: str = "",
+    status: str = "",
+    include_ended: bool = False,
 ):
     if (
         (category and category not in CATEGORIES)
@@ -325,8 +353,19 @@ async def resources(
     ):
         raise HTTPException(status_code=422, detail=INVALID_INPUT)
     records = request.app.state.repository.list_resources(
-        category=category or None, china_policy=china_policy or None, status=status or None
+        category=category or None, china_policy=china_policy or None
     )
+    if status:
+        # Explicit expired history includes resources whose collected offers all ended,
+        # even while their strict verification status stays pending.
+        records = [
+            resource
+            for resource in records
+            if resource.status.value == status
+            or (status == ResourceStatus.EXPIRED.value and offers_ended(resource))
+        ]
+    if not include_ended and status != ResourceStatus.EXPIRED.value:
+        records = [resource for resource in records if not offers_ended(resource)]
     return json_response(records, request.app.state.settings)
 
 
@@ -346,6 +385,7 @@ async def resource_detail(request: Request, resource_id: str):
             history=repository.history(resource_id),
             review=repository.review(resource_id),
             actions=repository.actions(resource_id),
+            messages=repository.list_messages(resource_id=resource_id, include_ended=True),
         ),
         request.app.state.settings,
     )
@@ -415,9 +455,42 @@ async def tasks(request: Request):
 )
 async def start_task(request: Request, body: CreateTaskRequest):
     settings = request.app.state.settings
-    scope = Scope(categories=body.categories, region=body.region)
+    scope = Scope(
+        categories=body.categories, region=body.region, resource_ids=body.resource_ids
+    )
     try:
         run = await request.app.state.manager.start(scope, trigger="manual")
+    except BusyError as exc:
+        raise HTTPException(status_code=409, detail=BUSY_MESSAGE) from exc
+    return json_response(run_read(run, settings.data_dir), settings, status_code=202)
+
+@router.post(
+    "/translations/backfill",
+    status_code=202,
+    response_model=RunRead,
+    responses={409: {"model": ApiError}},
+)
+async def backfill_translations(request: Request):
+    # Same-origin write guard: the application middleware checks Origin/Host
+    # for every non-GET request, exactly as for POST /api/tasks.
+    settings = request.app.state.settings
+    try:
+        run = await request.app.state.manager.backfill_translations()
+    except BusyError as exc:
+        raise HTTPException(status_code=409, detail=BUSY_MESSAGE) from exc
+    return json_response(run_read(run, settings.data_dir), settings, status_code=202)
+
+
+@router.post(
+    "/messages/backfill",
+    status_code=202,
+    response_model=RunRead,
+    responses={409: {"model": ApiError}},
+)
+async def backfill_sources(request: Request):
+    settings = request.app.state.settings
+    try:
+        run = await request.app.state.manager.backfill_sources()
     except BusyError as exc:
         raise HTTPException(status_code=409, detail=BUSY_MESSAGE) from exc
     return json_response(run_read(run, settings.data_dir), settings, status_code=202)
@@ -435,6 +508,7 @@ async def task_detail(request: Request, task_id: str):
         TaskDetailRead(
             run=run_read(run, settings.data_dir),
             changes=request.app.state.repository.get_changes(task_id),
+            messages=request.app.state.repository.list_messages(task_id=task_id, include_ended=True),
         ),
         settings,
     )

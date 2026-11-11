@@ -4,7 +4,7 @@ import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 
 function apiTarget(): string {
-  const value = process.env.AIFREERADAR_API_TARGET ?? 'http://127.0.0.1:8765'
+  const value = process.env.AIFREERADAR_API_TARGET ?? 'http://127.0.0.1:18765'
   let target: URL
   try {
     target = new URL(value)
@@ -22,8 +22,8 @@ function apiTarget(): string {
 
 export default defineConfig(() => {
   const target = apiTarget()
-  // The dev proxy makes 5173 requests look same-origin to the backend: browser
-  // writes reach /api with Origin 5173, so forward the backend's own origin.
+  // The dev proxy makes 15173 requests look same-origin to the backend: browser
+  // writes reach /api with Origin 15173, so forward the backend's own origin.
   // This keeps the shipped server strictly same-origin without a dev allowlist.
   const proxyOptions = (): ProxyOptions => ({
     target,
@@ -38,7 +38,7 @@ export default defineConfig(() => {
     resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
     server: {
       host: '127.0.0.1',
-      port: 5173,
+      port: 15173,
       strictPort: true,
       proxy: {
         '/api': proxyOptions(),

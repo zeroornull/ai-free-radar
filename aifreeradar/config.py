@@ -35,7 +35,7 @@ class Settings(BaseModel):
     default_scope: Scope = Field(default_factory=Scope)
     direct_sources: dict[str, list[str]] = Field(default_factory=dict)
     host: Literal["127.0.0.1"] = "127.0.0.1"
-    port: int = Field(default=8765, ge=1, le=65535)
+    port: int = Field(default=18765, ge=1, le=65535)
 
     @field_validator("schedule_time")
     @classmethod

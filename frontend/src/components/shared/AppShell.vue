@@ -10,8 +10,8 @@ const activeRun = computed(() => app.value?.active_run ?? null)
 const openLeads = computed(() => app.value?.open_leads ?? 0)
 const header = ref<HTMLElement | null>(null)
 let resizeObserver: ResizeObserver | null = null
-
 const navGroup = computed(() => {
+  if (route.path === '/') return 'messages'
   if (route.path === '/leads' || route.path.startsWith('/leads/')) return 'leads'
   if (route.path === '/resources' || route.path.startsWith('/resources/')) return 'resources'
   if (route.path === '/briefings' || route.path.startsWith('/briefings/')) return 'briefings'
@@ -46,7 +46,7 @@ onBeforeUnmount(() => {
   <a class="skip-link" href="#main">跳到主要内容</a>
   <header ref="header" class="site-header">
     <div class="shell header-inner">
-      <RouterLink class="brand" to="/resources">
+      <RouterLink class="brand" to="/">
         <span class="brand-mark" aria-hidden="true">
           <svg
             width="32"
@@ -69,22 +69,25 @@ onBeforeUnmount(() => {
         </span>
       </RouterLink>
       <nav class="site-nav" aria-label="主要导航">
-        <RouterLink
-          to="/leads"
-          :aria-current="navGroup === 'leads' ? 'page' : undefined"
-          :aria-label="openLeads > 0 ? `待核实线索，${openLeads} 条待处理` : undefined"
-        >
-          待核实线索
-          <span v-if="openLeads > 0" class="nav-count" aria-hidden="true">{{ openLeads }}</span>
+        <RouterLink to="/" :aria-current="navGroup === 'messages' ? 'page' : undefined">
+          消息动态
         </RouterLink>
         <RouterLink to="/resources" :aria-current="navGroup === 'resources' ? 'page' : undefined">
           资源库
         </RouterLink>
-        <RouterLink to="/briefings" :aria-current="navGroup === 'briefings' ? 'page' : undefined">
-          简报历史
+        <RouterLink
+          to="/leads"
+          :aria-current="navGroup === 'leads' ? 'page' : undefined"
+          :aria-label="openLeads > 0 ? `历史线索，${openLeads} 条来源待补` : undefined"
+        >
+          历史线索
+          <span v-if="openLeads > 0" class="nav-count" aria-hidden="true">{{ openLeads }}</span>
         </RouterLink>
         <RouterLink to="/tasks" :aria-current="navGroup === 'tasks' ? 'page' : undefined">
           研究任务
+        </RouterLink>
+        <RouterLink to="/briefings" :aria-current="navGroup === 'briefings' ? 'page' : undefined">
+          简报历史
         </RouterLink>
         <RouterLink to="/settings" :aria-current="navGroup === 'settings' ? 'page' : undefined">
           设置
@@ -115,7 +118,7 @@ onBeforeUnmount(() => {
         <line x1="12" y1="11" x2="12" y2="16" />
         <circle cx="12" cy="7.5" r="1" fill="currentColor" stroke="none" />
       </svg>
-      “有效”仅表示已核实官方免费政策符合零支付门槛。所有资源均<strong>未实测调用</strong>，网络访问<strong>未实测</strong>。核查结论以所列时间及官方来源为准，不保证政策持续有效或资源穷尽。
+      “消息动态”中的免费信息均来自来源报告，标注<strong>未核验消息</strong>；只有资源库中按需核验过的官方政策才显示“政策已核验”。所有资源均<strong>未实测调用</strong>，网络访问<strong>未实测</strong>。未说明的额度或条件按“未说明”保留；需绑定支付方式不代表需要付费，明确收费的机会不收录。
     </aside>
     <aside v-if="activeRun" class="notice" aria-label="正在运行的任务">
       研究任务运行中。<RouterLink :to="`/tasks/${activeRun.id}`">查看运行状态</RouterLink>。任务共用写入锁，完成后可发起下一项任务。
@@ -123,7 +126,7 @@ onBeforeUnmount(() => {
     <slot />
   </main>
   <footer class="shell site-footer">
-    AIFreeRadar · 官方政策研究 · 时间按本机时区显示 · 所有研究记录保存在本机
+    AIFreeRadar · 免费 API 消息雷达 · 时间按本机时区显示 · 所有研究记录保存在本机
   </footer>
 </template>
 

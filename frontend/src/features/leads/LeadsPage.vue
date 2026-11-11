@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import type { LeadRead, ReviewAction, RunRead } from '@/api/types'
 import {
   useAppQuery,
+  useBackfillTranslationMutation,
+  useBackfillMessagesMutation,
   useLeadsQuery,
   useRecheckMutation,
   useReviewMutation,
@@ -29,7 +31,20 @@ const ACTION_LABELS: Record<ReviewAction, string> = {
   note: '备注',
 }
 
+interface LocalizedText {
+  text: string
+  original: string
+  translated: boolean
+}
+
+function localizedText(original: string, translation: string | undefined): LocalizedText {
+  const zh = translation?.trim() ?? ''
+  if (!zh) return { text: original, original, translated: false }
+  return { text: zh, original, translated: true }
+}
+
 const { data: app } = useAppQuery()
+const router = useRouter()
 const {
   data: leadsData,
   isPending: leadsPending,
@@ -48,6 +63,44 @@ watch(
 )
 const leads = computed(() => leadsData.value ?? retainedLeads.value)
 const errorMessage = computed(() => leadsError.value?.message ?? '请求失败，请稍后重试。')
+
+const failureReasonViews = computed(() => {
+  const views = new Map<LeadRead, LocalizedText>()
+  for (const lead of leads.value) {
+    views.set(lead, localizedText(lead.resource.failure_reason, lead.resource.failure_reason_zh))
+  }
+  return views
+})
+
+function failureReasonView(lead: LeadRead): LocalizedText {
+  return failureReasonViews.value.get(lead)
+    ?? localizedText(lead.resource.failure_reason, lead.resource.failure_reason_zh)
+}
+
+const backfillMutation = useBackfillTranslationMutation()
+const backfillPending = backfillMutation.isPending
+const backfillError = computed(() => backfillMutation.error.value?.message ?? '')
+
+async function runBackfill(): Promise<void> {
+  try {
+    const run = await backfillMutation.mutateAsync(undefined)
+    await router.push(`/tasks/${run.id}`)
+  } catch {
+    // 失败原因由 backfillError 呈现。
+  }
+}
+
+const sourceBackfillMutation = useBackfillMessagesMutation()
+const sourceBackfillPending = sourceBackfillMutation.isPending
+const sourceBackfillError = computed(() => sourceBackfillMutation.error.value?.message ?? '')
+async function backfillSources(): Promise<void> {
+  try {
+    const run = await sourceBackfillMutation.mutateAsync(undefined)
+    await router.push(`/tasks/${run.id}`)
+  } catch {
+    // 由 sourceBackfillError 显示接口返回的原因。
+  }
+}
 
 const drafts = ref<Record<string, string>>({})
 const rowErrors = ref<Record<string, string>>({})
@@ -81,7 +134,7 @@ function setDraft(lead: LeadRead, value: string): void {
 
 function busyText(lead: LeadRead): string {
   const action = rowBusy.value[resourceId(lead)]
-  if (action === 'recheck') return '正在发起重查…'
+  if (action === 'recheck') return '正在发起按需核验…'
   return action ? `正在提交“${ACTION_LABELS[action]}”…` : ''
 }
 
@@ -152,10 +205,28 @@ async function runRecheck(lead: LeadRead): Promise<void> {
 </script>
 
 <template>
-  <PageHeading eyebrow="待核实线索" title="待核实线索" />
+  <PageHeading eyebrow="历史线索" title="历史线索">
+    <template #actions>
+      <Button type="button" class="h-11" :disabled="sourceBackfillPending || backfillPending || Boolean(app?.active_run)" @click="backfillSources">
+        {{ sourceBackfillPending ? '正在发起…' : '补齐存量消息' }}
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        class="h-11"
+        :disabled="backfillPending || sourceBackfillPending || Boolean(app?.active_run)"
+        @click="runBackfill"
+      >
+        {{ backfillPending ? '正在发起…' : '回填译文' }}
+      </Button>
+    </template>
+  </PageHeading>
   <p class="muted">
-    人工判断与模型证据分开保存：处理只改变审核状态，不修改官方政策与证据字段；被忽略的资源不再自动重查，也不进入简报。
+    这里保留尚无可追溯消息来源的历史记录。使用“补齐存量消息”恢复本地来源，并为仍缺来源的记录补搜；补齐后可在资源库查看。
+    额度、期限或绑卡条件未说明不影响消息收录。官方政策核验可按需发起，人工判断与收集消息分开保存。
   </p>
+  <p v-if="backfillError" class="error-message" role="alert">{{ backfillError }}</p>
+  <p v-if="sourceBackfillError" class="error-message" role="alert">{{ sourceBackfillError }}</p>
 
   <Skeleton v-if="leadsPending && leads.length === 0" class="h-52 w-full" />
   <QueryError
@@ -167,7 +238,7 @@ async function runRecheck(lead: LeadRead): Promise<void> {
     <QueryError v-if="leadsFailed" :message="errorMessage" @retry="refetchLeads()" />
 
     <template v-if="leads.length">
-      <p class="muted" role="status">共 {{ leads.length }} 条线索等待人工处理。</p>
+      <p class="muted" role="status">共 {{ leads.length }} 条历史线索来源待补。</p>
       <ul class="record-list leads-list">
         <li
           v-for="(lead, index) in leads"
@@ -182,19 +253,26 @@ async function runRecheck(lead: LeadRead): Promise<void> {
             </h2>
             <div class="chips">
               <span class="chip">{{ labelFor(app, lead.resource.category) }}</span>
-              <StatusBadge :value="lead.resource.status" :label="labelFor(app, lead.resource.status)" />
-              <StatusBadge
-                :value="lead.resource.check_status"
-                :label="labelFor(app, lead.resource.check_status)"
-              />
+              <StatusBadge value="pending" label="来源待补" />
               <span class="chip">{{ stateText(lead) }}</span>
             </div>
           </div>
 
-          <p v-if="lead.resource.failure_reason" class="reason-body failure preserve-lines">
-            失败原因：{{ lead.resource.failure_reason }}
-          </p>
-          <p class="meta">最近核查：{{ formatDate(lead.resource.last_checked_at) }}</p>
+          <p class="muted">历史线索 · 来源待补</p>
+          <details v-if="lead.resource.failure_reason" class="reason">
+            <summary>可选：查看历史政策核验说明</summary>
+            <p class="reason-body failure preserve-lines">
+              按需核验说明：{{ failureReasonView(lead).text }}
+            </p>
+            <details v-if="failureReasonView(lead).translated" class="translation-details">
+              <summary>原文</summary>
+              <p class="preserve-lines">{{ failureReasonView(lead).original }}</p>
+            </details>
+            <p v-if="failureReasonView(lead).translated" class="meta translation-note">
+              机器翻译，未经核验
+            </p>
+          </details>
+          <p class="meta">首次发现：{{ formatDate(lead.resource.first_seen_at) }}</p>
           <p v-if="lead.review.note" class="meta preserve-lines">人工备注：{{ lead.review.note }}</p>
 
           <div class="actions lead-actions">
@@ -240,7 +318,7 @@ async function runRecheck(lead: LeadRead): Promise<void> {
               :disabled="recheckPending || Boolean(rowBusy[resourceId(lead)])"
               @click="runRecheck(lead)"
             >
-              重查这一条
+              按需核验
             </Button>
           </div>
 
@@ -259,7 +337,7 @@ async function runRecheck(lead: LeadRead): Promise<void> {
             class="meta"
             role="status"
           >
-            已发起重查任务，<RouterLink :to="`/tasks/${recheckResults[resourceId(lead)].id}`">
+            已发起按需核验任务，<RouterLink :to="`/tasks/${recheckResults[resourceId(lead)].id}`">
               查看运行状态
             </RouterLink>。
           </p>
@@ -292,8 +370,8 @@ async function runRecheck(lead: LeadRead): Promise<void> {
 
     <EmptyState
       v-else
-      title="当前没有待核实的线索。"
-      description="新的待核实资源会在自动核查后出现在这里；人工处理过的记录可从资源库查看。"
+      title="当前没有来源待补的历史线索"
+      description="有来源的消息已收录到资源库；未说明的条件会随消息保留。"
     >
       <template #actions>
         <div class="actions">
@@ -332,4 +410,8 @@ async function runRecheck(lead: LeadRead): Promise<void> {
   resize: vertical;
 }
 .note-form .actions { margin-block: 0; }
+.translation-details { margin-block-start: 0.35rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg-surface); padding: 0.35rem 0.6rem; }
+.translation-details summary { min-block-size: 2rem; padding-block: 0.15rem; color: var(--color-text-secondary); font-size: 0.8125rem; font-weight: 600; }
+.translation-details p { margin-block: 0.35rem 0; color: var(--color-text-secondary); font-size: 0.875rem; line-height: 1.55; }
+.translation-note { color: var(--color-text-tertiary); }
 </style>

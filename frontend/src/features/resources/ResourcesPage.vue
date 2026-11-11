@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter, type LocationQuery } from 'vue-router'
 import type { AppRead, Resource, ResourceReview } from '@/api/types'
-import { useAppQuery, useResourcesQuery, useReviewsQuery, type ResourceFilters } from '@/api/queries'
+import { useAppQuery, useBackfillMessagesMutation, useResourcesQuery, useReviewsQuery, type ResourceFilters } from '@/api/queries'
 import PageHeading from '@/components/shared/PageHeading.vue'
 import EmptyState from '@/components/shared/EmptyState.vue'
 import QueryError from '@/components/shared/QueryError.vue'
@@ -42,7 +42,8 @@ function parseFilters(query: LocationQuery, app: AppRead | undefined): ParsedFil
   const filters: ResourceFilters = {
     category: read('category', 'API 类别', app?.categories),
     china_policy: read('china_policy', '中国大陆政策', app?.china_policies),
-    status: read('status', '资源状态', app?.resource_statuses),
+    status: read('status', '政策核验状态', app?.resource_statuses),
+    include_ended: query.include_ended === 'true' || query.include_ended === '1',
   }
   return { filters, error: errors.length ? errors.join(' ') : null }
 }
@@ -61,7 +62,12 @@ const parsed = computed(() => parseFilters(route.query, app.value))
 const applied = computed(() => parsed.value.filters)
 const filterError = computed(() => parsed.value.error)
 const filtered = computed(() =>
-  Boolean(applied.value.category || applied.value.china_policy || applied.value.status),
+  Boolean(
+    applied.value.category ||
+      applied.value.china_policy ||
+      applied.value.status ||
+      applied.value.include_ended,
+  ),
 )
 
 const {
@@ -96,11 +102,24 @@ const resourcesErrorMessage = computed(
   () => resourcesError.value?.message ?? '请求失败，请稍后重试。',
 )
 
+const backfillMutation = useBackfillMessagesMutation()
+const backfillPending = backfillMutation.isPending
+const backfillError = computed(() => backfillMutation.error.value?.message ?? '')
+async function backfillSources(): Promise<void> {
+  try {
+    const run = await backfillMutation.mutateAsync(undefined)
+    await router.push(`/tasks/${run.id}`)
+  } catch {
+    // 接口错误由 backfillError 呈现。
+  }
+}
+
 function applyFilters(next: ResourceFilters) {
   const query: Record<string, string> = {}
   if (next.category) query.category = next.category
   if (next.china_policy) query.china_policy = next.china_policy
   if (next.status) query.status = next.status
+  if (next.include_ended) query.include_ended = 'true'
   void router.push({ path: '/resources', query })
 }
 
@@ -110,7 +129,14 @@ function clearFilters() {
 </script>
 
 <template>
-  <PageHeading eyebrow="资源库" title="资源库" />
+  <PageHeading eyebrow="资源库" title="资源库">
+    <template #actions>
+      <Button type="button" variant="outline" class="h-11" :disabled="backfillPending || Boolean(app?.active_run)" @click="backfillSources">
+        {{ backfillPending ? '正在发起…' : '补齐存量消息' }}
+      </Button>
+    </template>
+  </PageHeading>
+  <p v-if="backfillError" class="error-message" role="alert">{{ backfillError }}</p>
 
   <template v-if="appPending">
     <Skeleton class="mb-4 h-44 w-full" />
@@ -149,13 +175,14 @@ function clearFilters() {
             v-for="item in resources"
             :key="item.id ?? `${item.provider}-${item.service}`"
             :resource="item"
+            :show-ended="applied.include_ended"
             :review="reviewsById.get(item.id ?? '')"
           />
         </ul>
         <EmptyState
           v-else-if="filtered"
           title="当前筛选下没有资源"
-          description="可以清除筛选查看全部资源，或发起研究补充资源库。"
+          description="可以清除筛选查看全部资源，或发起收集补充资源库。"
         >
           <template #actions>
             <div class="actions">
@@ -163,7 +190,7 @@ function clearFilters() {
                 <RouterLink to="/resources">清除筛选</RouterLink>
               </Button>
               <Button as-child variant="ghost" class="h-11">
-                <RouterLink to="/tasks#start-task">发起研究任务</RouterLink>
+                <RouterLink to="/tasks#start-task">发起收集任务</RouterLink>
               </Button>
             </div>
           </template>
@@ -171,12 +198,12 @@ function clearFilters() {
         <EmptyState
           v-else
           title="资源库尚无记录"
-          description="发起首次研究后，这里会保存资源、官方依据及核查记录。"
+          description="发起首次收集后，这里会保存资源、消息来源与核验历史。"
         >
           <template #actions>
             <div class="actions">
               <Button as-child variant="ghost" class="h-11">
-                <RouterLink to="/tasks#start-task">发起研究任务</RouterLink>
+                <RouterLink to="/tasks#start-task">发起收集任务</RouterLink>
               </Button>
             </div>
           </template>

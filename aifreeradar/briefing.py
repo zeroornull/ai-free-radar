@@ -20,12 +20,28 @@ from .models import (
     Change,
     CheckStatus,
     LeadDiscovery,
+    MessageSource,
+    NewsItem,
     Resource,
     ResourceStatus,
     Run,
     eligible_recommendation,
 )
 from .storage import IMPORTANT_FIELDS
+
+MESSAGE_KIND_LABELS = {
+    "new": "新发现",
+    "changed": "更新",
+    "expired": "已结束",
+    "restored": "恢复",
+}
+SOURCE_TYPE_LABELS = {
+    "official": "官方页面",
+    "community": "社区",
+    "github": "GitHub",
+    "search": "搜索",
+}
+SOURCE_ACCESS_LABELS = {"page": "网页原文", "snippet": "搜索摘要"}
 
 FIELD_LABELS = {
     "category": "类别",
@@ -172,6 +188,131 @@ def _stats_line(run: Run) -> str:
     )
 
 
+def _unknown_or(value: object) -> str:
+    text = str(value).strip() if value is not None else ""
+    if not text or text in {UNKNOWN, "未核实", "未知", "unknown"}:
+        return UNKNOWN
+    return markdown_text(text)
+
+
+def _payment_binding_label(value: bool | None) -> str:
+    if value is True:
+        return "需要绑定支付方式"
+    if value is False:
+        return "无需绑定支付方式"
+    return "是否绑定支付方式未说明"
+
+
+def _source_label(source: MessageSource) -> str:
+    return (
+        f"{SOURCE_TYPE_LABELS[source.source_type]}"
+        f"（{SOURCE_ACCESS_LABELS[source.access]}）"
+    )
+
+
+def _bilingual(zh: object, original: object) -> str:
+    """Machine translation first; the original stays as an inline annotation."""
+    return f"{markdown_text(zh)}（原文：{markdown_text(original)}）"
+
+
+def _translated_or(zh: object, value: object) -> str:
+    """Prefer a non-empty machine translation, else render the original as before."""
+    translation = str(zh).strip() if zh is not None else ""
+    if translation:
+        return _bilingual(translation, value)
+    return _unknown_or(value)
+
+
+def _news_translated(message: NewsItem) -> bool:
+    policy = message.policy
+    return any(
+        str(value).strip()
+        for value in (
+            message.title_zh,
+            message.summary_zh,
+            message.end_reason_zh,
+            policy.quota_zh,
+            policy.quota_unit_zh,
+            policy.refresh_cycle_zh,
+            policy.rate_limit_zh,
+            policy.claim_conditions_zh,
+            policy.expiry_notes_zh,
+            policy.region_restrictions_zh,
+        )
+    )
+
+
+def _news_details(message: NewsItem) -> list[str]:
+    policy = message.policy
+    published = (
+        markdown_text(_time(message.published_at))
+        if message.published_at
+        else "来源未注明发布时间"
+    )
+    expiry = markdown_text(_time(policy.expires_at)) if policy.expires_at else UNKNOWN
+    title = markdown_text(message.title)
+    if message.title_zh.strip():
+        heading = [f"### {markdown_text(message.title_zh)}", "", f"> 原文：{title}", ""]
+    else:
+        heading = [f"### {title}", ""]
+    lines = [
+        *heading,
+        f"- 提供商与类别：{markdown_text(policy.provider)} / {CATEGORY_LABELS[policy.category]}",
+        f"- 事件：{MESSAGE_KIND_LABELS.get(message.kind, message.kind)}",
+        f"- 免费机会：{_bilingual(message.summary_zh, message.summary) if message.summary_zh.strip() else markdown_text(message.summary)}",
+        (
+            f"- 免费形式：{FREE_TYPE_LABELS[policy.free_type] if policy.free_type != 'unknown' else UNKNOWN}；"
+            f"免费额度：{_translated_or(policy.quota_zh, policy.quota)} {_translated_or(policy.quota_unit_zh, policy.quota_unit)}；"
+            f"刷新周期：{_translated_or(policy.refresh_cycle_zh, policy.refresh_cycle)}；限速：{_translated_or(policy.rate_limit_zh, policy.rate_limit)}"
+        ),
+        f"- 领取条件：{_translated_or(policy.claim_conditions_zh, policy.claim_conditions)}；{_payment_binding_label(policy.payment_method_required)}",
+        f"- 到期：{expiry}；{_translated_or(policy.expiry_notes_zh, policy.expiry_notes)}",
+        (
+            f"- 地区报告：中国大陆政策：{CHINA_POLICY_LABELS[policy.china_policy] if policy.china_policy != 'unknown' else UNKNOWN}；"
+            f"{_translated_or(policy.region_restrictions_zh, policy.region_restrictions)}；网络访问未实测"
+        ),
+        "- 核验状态：来源报告，未经官方政策逐项核验；正式核查结论以资源详情为准。",
+        f"- 发现时间：{markdown_text(_time(message.discovered_at))}；来源发布时间：{published}",
+        "- 来源：",
+    ]
+    if message.ended:
+        if message.end_reason:
+            reason = (
+                _bilingual(message.end_reason_zh, message.end_reason)
+                if message.end_reason_zh.strip()
+                else markdown_text(message.end_reason)
+            )
+        else:
+            reason = "来源已注明结束"
+        lines.append(f"- 结束依据：{reason}")
+    for source in message.sources:
+        source_time = (
+            markdown_text(_time(source.published_at))
+            if source.published_at
+            else "发布时间未说明"
+        )
+        lines.append(
+            f"  - {_source_label(source)}：{markdown_link('来源链接', source.url)}；"
+            f"来源发布时间：{source_time}；摘录：{markdown_text(source.excerpt)}"
+        )
+    return lines
+
+
+def _news_section(messages: Sequence[NewsItem]) -> list[str]:
+    lines = ["## 消息动态", ""]
+    lines.append(
+        f"本次来源记录 {len(messages)} 条；均为来源报告，未经官方政策逐项核验，"
+        "正式核查结论以各资源详情为准。"
+    )
+    if any(_news_translated(message) for message in messages):
+        lines.append("机器翻译，未经核验；译文在前、原文附注在后，核验以原文为准。")
+    lines.append("")
+    for message in messages:
+        lines.extend(_news_details(message))
+        lines.append("")
+    return lines
+
+
 def _discovery_label(discovery: LeadDiscovery) -> str:
     if discovery.origin == "direct":
         return "官方目录直连"
@@ -182,27 +323,13 @@ def _discovery_label(discovery: LeadDiscovery) -> str:
     return "目录链接"
 
 
-def render_briefing(
+def _verification_sections(
     run: Run,
     resources: list[Resource],
     changes: list[Change],
-    failures: list[str],
-    discoveries: Sequence[LeadDiscovery] = (),
-) -> str:
-    local_time = run.started_at.astimezone()
-    categories = "、".join(CATEGORY_LABELS[item] for item in run.scope.categories)
-    region = "全球" if run.scope.region == "global" else "官方支持中国大陆（含待核实线索）"
-    lines = [
-        f"# 免费 AI API 简报 — {local_time:%Y-%m-%d %H:%M}",
-        "",
-        f"- 任务：{markdown_text(run.id)}",
-        f"- 研究范围：{categories}；{region}",
-        f"- 触发方式：{TRIGGER_LABELS[run.trigger]}",
-        f"- 执行结果：{RUN_STATUS_LABELS[run.status]}",
-        "- 说明：官方政策核查，未实测调用；网络访问未实测；不保证搜索穷尽或政策持续不变。",
-        _stats_line(run),
-        "",
-    ]
+    discoveries: Sequence[LeadDiscovery],
+) -> tuple[list[str], dict[str, Resource]]:
+    lines: list[str] = []
     # Combine multiple observations of the same resource into one incremental row.
     grouped: dict[str, Change] = {}
     for change in changes:
@@ -317,8 +444,17 @@ def render_briefing(
             ]
         )
     if pending:
+        if any(
+            resource.failure_reason and resource.failure_reason_zh.strip()
+            for resource in pending.values()
+        ):
+            lines.append("机器翻译，未经核验；译文在前、原文附注在后，核验以原文为准。")
+            lines.append("")
         for resource in pending.values():
-            reason = resource.failure_reason or "关键免费条件或对应官方依据未明确"
+            if resource.failure_reason and resource.failure_reason_zh.strip():
+                reason = f"{resource.failure_reason_zh}（原文：{resource.failure_reason}）"
+            else:
+                reason = resource.failure_reason or "关键免费条件或对应官方依据未明确"
             if run.scope.region == "china" and resource.china_policy == "unknown":
                 reason = f"中国大陆注册及 API 使用政策缺少明确官方地区依据；{reason}"
             lines.extend(
@@ -341,6 +477,59 @@ def render_briefing(
             lines.append("")
     else:
         lines.extend(["无。", ""])
+    return lines, unsuccessful
+
+
+def render_briefing(
+    run: Run,
+    resources: list[Resource],
+    changes: list[Change],
+    failures: list[str],
+    discoveries: Sequence[LeadDiscovery] = (),
+    messages: Sequence[NewsItem] = (),
+) -> str:
+    local_time = run.started_at.astimezone()
+    categories = "、".join(CATEGORY_LABELS[item] for item in run.scope.categories)
+    region = "全球" if run.scope.region == "global" else "中国大陆范围（官方支持中国大陆及地区未说明消息）"
+    messages = [
+        message
+        for message in messages
+        if message.task_id == run.id and run.scope.includes(message.policy)
+    ]
+    changes = [change for change in changes if change.task_id == run.id]
+    # A collection run carries source messages instead of strict checks. A
+    # default-scope injected provider may still return the old strict policy
+    # output; its current-run policy writes keep the verification report.
+    verification = (
+        bool(run.scope.resource_ids)
+        or bool(changes)
+        or any(
+            resource.last_task_id == run.id and not getattr(resource, "messages", ())
+            for resource in resources
+        )
+    )
+    lines = [
+        f"# 免费 AI API 简报 — {local_time:%Y-%m-%d %H:%M}",
+        "",
+        f"- 任务：{markdown_text(run.id)}",
+        f"- 研究范围：{categories}；{region}",
+        f"- 触发方式：{TRIGGER_LABELS[run.trigger]}",
+        f"- 执行结果：{RUN_STATUS_LABELS[run.status]}",
+        "- 说明：来源消息收集 / 按需官方政策核验；未实测调用；网络访问未实测；不保证搜索穷尽或政策持续不变。",
+        _stats_line(run),
+        "",
+    ]
+    if messages:
+        lines.extend(_news_section(messages))
+    if verification:
+        policy_lines, unsuccessful = _verification_sections(
+            run, resources, changes, discoveries
+        )
+        lines.extend(policy_lines)
+    else:
+        unsuccessful = {}
+        if not messages:
+            lines.extend(["本次无新增或变化", ""])
 
     lines.extend(["## 核查失败 / 未完成事项", ""])
     issues = list(dict.fromkeys([*failures, *run.notes, *([run.error] if run.error else [])]))

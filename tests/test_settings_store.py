@@ -101,7 +101,7 @@ def test_describe_sources_shapes_and_read_only_fields(
     }
     # Read-only fields expose the startup value and never a changeable source.
     assert fields["host"] == {"value": "127.0.0.1", "source": "read_only"}
-    assert fields["port"] == {"value": 8765, "source": "read_only"}
+    assert fields["port"] == {"value": 18765, "source": "read_only"}
     assert fields["data_dir"] == {"value": str(settings.data_dir), "source": "read_only"}
     # Secrets are never described by value.
     assert fields["model_api_key"] == {

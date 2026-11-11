@@ -46,12 +46,12 @@ const errorMessage = computed(
     <RunList v-if="runs.length" :runs="runs" destination="briefings" />
     <EmptyState
       v-else
-      title="尚无研究简报"
-      description="完成研究任务后，这里会保留对应的简报及 Markdown 下载。"
+      title="尚无收集简报"
+      description="完成任务后，这里会保留对应的收集简报及 Markdown 下载。"
     >
       <template #actions>
         <Button as-child variant="ghost" class="h-11">
-          <RouterLink to="/tasks#start-task">发起首次研究</RouterLink>
+          <RouterLink to="/tasks#start-task">发起首次收集</RouterLink>
         </Button>
       </template>
     </EmptyState>
