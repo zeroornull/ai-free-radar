@@ -88,7 +88,7 @@ watch(
 </script>
 
 <template>
-  <PageHeading eyebrow="任务详情" title="任务详情" />
+  <PageHeading title="任务详情" />
   <RouterLink class="back-link" to="/tasks">返回任务历史</RouterLink>
 
   <Skeleton v-if="taskPending" class="h-64 w-full" />
@@ -102,7 +102,7 @@ watch(
     :message="errorMessage"
     @retry="refetchTask()"
   />
-  <template v-else-if="run">
+  <article v-else-if="run" class="task-article" aria-label="任务运行记录">
     <QueryError
       v-if="backgroundError"
       :message="errorMessage"
@@ -125,9 +125,9 @@ watch(
       </Button>
     </div>
 
-    <section class="panel">
+    <section class="task-chapter" aria-labelledby="run-status-heading">
       <p class="sr-only" role="status" aria-live="polite">{{ announcement }}</p>
-      <h2>执行状态：{{ labelFor(app, run.status) }}</h2>
+      <h2 id="run-status-heading">执行状态：{{ labelFor(app, run.status) }}</h2>
       <p v-if="run.status === 'running'" class="notice">{{ runningRefreshText }}</p>
       <p v-else-if="run.status === 'partial'" class="notice notice--warning">本次仅完成部分，已收集结果已保存。下方列出失败原因及未完成事项。</p>
       <p v-else-if="run.status === 'failed'" class="failure">本次任务失败。已有资源结论不会仅因请求失败被判定失效。查看原因后可返回任务页重新发起。</p>
@@ -148,16 +148,20 @@ watch(
           <dd>{{ run.schedule_day }}</dd>
         </template>
       </FactsList>
+    </section>
 
-      <h3>本次消耗</h3>
+    <section class="task-chapter" aria-labelledby="run-consumption-heading">
+      <h2 id="run-consumption-heading">本次消耗</h2>
       <RunStats :stats="run.stats" />
+    </section>
 
-      <template v-if="run.error">
-        <h3>失败原因</h3>
-        <p class="failure preserve-lines">{{ run.error }}</p>
-      </template>
+    <section v-if="run.error" class="task-chapter task-chapter--failure" aria-labelledby="run-failure-heading">
+      <h2 id="run-failure-heading">失败原因</h2>
+      <p class="failure preserve-lines">{{ run.error }}</p>
+    </section>
 
-      <h3>任务说明与未完成事项</h3>
+    <section class="task-chapter" aria-labelledby="run-notes-heading">
+      <h2 id="run-notes-heading">任务说明与未完成事项</h2>
       <ul v-if="run.notes.length" class="note-list">
         <li v-for="(note, index) in run.notes" :key="index" class="preserve-lines">{{ note }}</li>
       </ul>
@@ -170,12 +174,14 @@ watch(
       </p>
     </section>
 
-    <section class="panel">
-      <h2>本次收集到的消息</h2>
+    <section class="task-chapter" aria-labelledby="run-messages-heading">
+      <h2 id="run-messages-heading">本次收集到的消息</h2>
       <CollectedMessageList :items="messages" :show-ended="true" :link-resources="true" />
+    </section>
 
-      <h2>本次记录的资源变化</h2>
-      <ul v-if="changes.length">
+    <section class="task-chapter" aria-labelledby="run-changes-heading">
+      <h2 id="run-changes-heading">本次记录的资源变化</h2>
+      <ul v-if="changes.length" class="change-register">
         <li v-for="change in changes" :key="change.id ?? `${change.resource_id}-${change.discovered_at ?? ''}`">
           {{ labelFor(app, change.kind) }} ·
           <RouterLink :to="`/resources/${change.resource_id}`">查看资源 <bdi>{{ change.resource_id }}</bdi></RouterLink>
@@ -190,5 +196,21 @@ watch(
         }}
       </p>
     </section>
-  </template>
+  </article>
 </template>
+
+<style scoped>
+.task-article { min-inline-size: 0; }
+.task-article > .actions { padding-block: 1rem; margin-block: 0 0.5rem; }
+.task-chapter { margin-block: 1.5rem 0; padding-block-start: 1rem; border-block-start: 1px solid var(--color-border); }
+.task-chapter > h2 { margin-block: 0 1rem; font: 600 1.25rem/1.4 var(--font-body); }
+.task-chapter--failure { border-block-start-color: var(--color-error); }
+.task-chapter :deep(.facts dd bdi) { font-family: var(--font-mono); font-size: 0.8125rem; overflow-wrap: anywhere; }
+.change-register { list-style: none; margin: 0; padding: 0; }
+.change-register > li { padding-block: 0.85rem; border-block-end: 1px solid var(--color-border); font-size: 0.875rem; overflow-wrap: anywhere; }
+.task-chapter > .note-list { max-inline-size: 75ch; }
+@media (max-width: 480px) {
+  .task-article > .actions { align-items: stretch; }
+  .task-article > .actions :deep(a), .task-article > .actions :deep(button) { flex: 1 1 auto; }
+}
+</style>

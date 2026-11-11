@@ -93,7 +93,7 @@ onBeforeUnmount(() => {
 <template>
   <AppShell>
     <div role="status" aria-live="polite">{{ completionMessage }}</div>
-    <PageHeading v-if="route.name === 'not-found'" eyebrow="系统提示" title="页面不存在" />
+    <PageHeading v-if="route.name === 'not-found'" title="页面不存在" />
     <RouterView />
   </AppShell>
 </template>

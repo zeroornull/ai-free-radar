@@ -205,7 +205,7 @@ async function runRecheck(lead: LeadRead): Promise<void> {
 </script>
 
 <template>
-  <PageHeading eyebrow="历史线索" title="历史线索">
+  <PageHeading title="历史线索">
     <template #actions>
       <Button type="button" class="h-11" :disabled="sourceBackfillPending || backfillPending || Boolean(app?.active_run)" @click="backfillSources">
         {{ sourceBackfillPending ? '正在发起…' : '补齐存量消息' }}
@@ -239,12 +239,14 @@ async function runRecheck(lead: LeadRead): Promise<void> {
 
     <template v-if="leads.length">
       <p class="muted" role="status">共 {{ leads.length }} 条历史线索来源待补。</p>
-      <ul class="record-list leads-list">
+      <ul class="record-list leads-list" aria-label="来源待补线索登记">
         <li
           v-for="(lead, index) in leads"
           :key="resourceId(lead) || `${lead.resource.provider}-${lead.resource.service}`"
           class="record lead-record"
         >
+          <div class="lead-context">
+          <p v-if="resourceId(lead)" class="lead-registration">登记号 <bdi>{{ resourceId(lead) }}</bdi></p>
           <div class="record-heading">
             <h2>
               <RouterLink :to="`/resources/${resourceId(lead)}`">
@@ -258,7 +260,7 @@ async function runRecheck(lead: LeadRead): Promise<void> {
             </div>
           </div>
 
-          <p class="muted">历史线索 · 来源待补</p>
+          <p class="meta">历史线索 · 来源待补</p>
           <details v-if="lead.resource.failure_reason" class="reason">
             <summary>可选：查看历史政策核验说明</summary>
             <p class="reason-body failure preserve-lines">
@@ -274,6 +276,8 @@ async function runRecheck(lead: LeadRead): Promise<void> {
           </details>
           <p class="meta">首次发现：{{ formatDate(lead.resource.first_seen_at) }}</p>
           <p v-if="lead.review.note" class="meta preserve-lines">人工备注：{{ lead.review.note }}</p>
+          </div>
+          <div class="lead-controls">
 
           <div class="actions lead-actions">
             <Button
@@ -364,6 +368,7 @@ async function runRecheck(lead: LeadRead): Promise<void> {
               </Button>
             </div>
           </form>
+          </div>
         </li>
       </ul>
     </template>
@@ -384,34 +389,29 @@ async function runRecheck(lead: LeadRead): Promise<void> {
   </template>
 </template>
 
-<style>
-.leads-list { gap: var(--space-3); }
-.lead-record .lead-actions { margin-block-start: var(--space-2); }
-.lead-record .reason-body { margin-block: var(--space-2) 0; }
-.note-form {
-  margin-block-start: var(--space-2);
-  padding-block-start: var(--space-2);
-  border-block-start: 1px solid var(--color-border);
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-.note-input {
-  font: inherit;
-  font-size: 1rem;
-  inline-size: 100%;
-  min-block-size: 2.75rem;
-  padding: 0.5rem 0.7rem;
-  border: 1px solid var(--color-control-border);
-  border-radius: var(--radius-sm);
-  color: var(--color-text);
-  background-color: var(--color-bg-surface);
-  line-height: 1.55;
-  resize: vertical;
-}
+<style scoped>
+.leads-list { display: block; margin: 0; padding: 0; list-style: none; border-block-start: 1px solid var(--color-text); }
+.lead-record { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 2rem; margin: 0; padding: 1.25rem 0; border: 0; border-block-end: 1px solid var(--color-border); background: transparent; }
+.lead-context, .lead-controls { min-inline-size: 0; overflow-wrap: anywhere; }
+.lead-registration { margin: 0 0 0.5rem; font-family: var(--font-ui); font-size: 0.625rem; color: var(--color-text-secondary); line-height: 1.6; }
+.lead-registration bdi { margin-inline-start: 0.5rem; font-family: var(--font-mono); }
+.lead-context .record-heading { display: block; }
+.lead-context h2 { margin-block: 0 0.6rem; font-family: var(--font-body); font-size: 1.25rem; line-height: 1.4; font-weight: 600; }
+.lead-context .chips { justify-content: flex-start; }
+.lead-context > p { margin-block: 0.7rem 0; }
+.lead-context .reason { margin-block-start: 0.8rem; }
+.lead-context .reason-body { margin-block: 0.5rem 0; }
+.lead-controls { padding-inline-start: 1.5rem; border-inline-start: 1px solid var(--color-border); }
+.lead-controls .lead-actions { margin-block: 0 0.75rem; gap: 0.5rem; }
+.note-form { margin-block-start: 0.75rem; padding-block-start: 0.75rem; border-block-start: 1px solid var(--color-border); display: flex; flex-direction: column; gap: 0.4rem; }
+.note-input { font: inherit; font-size: 1rem; inline-size: 100%; min-block-size: 2.75rem; padding: 0.5rem 0.7rem; border: 1px solid var(--color-control-border); color: var(--color-text); background-color: var(--color-bg-surface); line-height: 1.55; resize: vertical; }
 .note-form .actions { margin-block: 0; }
-.translation-details { margin-block-start: 0.35rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg-surface); padding: 0.35rem 0.6rem; }
-.translation-details summary { min-block-size: 2rem; padding-block: 0.15rem; color: var(--color-text-secondary); font-size: 0.8125rem; font-weight: 600; }
-.translation-details p { margin-block: 0.35rem 0; color: var(--color-text-secondary); font-size: 0.875rem; line-height: 1.55; }
-.translation-note { color: var(--color-text-tertiary); }
+.translation-details { margin-block-start: 0.5rem; border-block-start: 1px solid var(--color-border); padding-block: 0.35rem; }
+.translation-details summary { min-block-size: 2rem; padding-block: 0.25rem; color: var(--color-text-secondary); font-family: var(--font-ui); font-size: 0.8125rem; font-weight: 600; cursor: pointer; }
+.translation-details p { margin-block: 0.35rem 0; color: var(--color-text-secondary); font-size: 0.875rem; line-height: 1.6; }
+.translation-note { color: var(--color-text-secondary); }
+@media (max-width: 899px) {
+  .lead-record { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+  .lead-controls { padding-inline-start: 0; border-inline-start: 0; }
+}
 </style>

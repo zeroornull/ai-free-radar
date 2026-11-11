@@ -7,7 +7,7 @@ import { formatDate, labelFor } from '@/app/presentation'
 import PolicyChip from '@/components/shared/PolicyChip.vue'
 import SafeExternalLink from '@/components/shared/SafeExternalLink.vue'
 
-const props = defineProps<{ item: NewsItem }>()
+const props = defineProps<{ item: NewsItem; position: number }>()
 
 interface LocalizedText {
   text: string
@@ -44,7 +44,7 @@ const accessLabels: Record<string, string> = {
 
 const categoryLabel = computed(() => labelFor(app.value, props.item.policy.category))
 const kindLabel = computed(() => kindLabels[props.item.kind] ?? props.item.kind)
-const ended = computed(() => props.item.ended || props.item.kind === 'expired')
+const ended = computed(() => props.item.ended)
 
 const titleText = computed(() => localizedText(props.item.title, props.item.title_zh))
 const summaryText = computed(() => localizedText(props.item.summary, props.item.summary_zh))
@@ -90,12 +90,27 @@ const cardText = computed(() => {
   return '未说明'
 })
 
+const expiryView = computed<LocalizedText>(() => {
+  const policy = props.item.policy
+  const original = policy.expiry_notes.trim() || '未说明'
+  const note = localizedText(original, policy.expiry_notes_zh)
+  const date = policy.expires_at ? formatDate(policy.expires_at) : ''
+  const noteText = note.text.trim() || '未说明'
+  const text = date
+    ? noteText === '未说明'
+      ? date
+      : `${date} · ${noteText}`
+    : noteText
+  return { text, original, translated: note.translated }
+})
+
 const hasTranslation = computed(() =>
   titleText.value.translated ||
   summaryText.value.translated ||
   quotaView.value.translated ||
   claimView.value.translated ||
-  (ended.value && Boolean(props.item.end_reason) && endReasonText.value.translated),
+  expiryView.value.translated ||
+  (Boolean(props.item.end_reason) && endReasonText.value.translated),
 )
 
 const discoveredAt = computed(() => props.item.discovered_at)
@@ -113,6 +128,10 @@ const ageText = computed(() => {
   if (hours < 24) return `发现于 ${hours} 小时前`
   return `发现于 ${Math.floor(hours / 24)} 天前`
 })
+const summaryLong = computed(() => summaryText.value.text.length > 88)
+const claimLong = computed(() => claimView.value.text.length > 56)
+const primarySource = computed(() => props.item.sources[0])
+const extraSourceCount = computed(() => Math.max(props.item.sources.length - 1, 0))
 
 function sourceTypeLabel(sourceType: string): string {
   return sourceTypeLabels[sourceType] ?? '来源'
@@ -136,29 +155,31 @@ function sourceHost(url: string): string {
 </script>
 
 <template>
-  <li class="record message-card">
+  <li class="record message-card" :class="{ 'message-card--ended': ended }">
+    <span class="message-position" aria-label="列表位置">{{ String(position).padStart(2, '0') }}</span>
+    <div class="message-body">
     <div class="record-heading">
       <h2><bdi>{{ titleText.text }}</bdi></h2>
-      <span class="badge">未核验消息</span>
+      <details v-if="titleText.translated" class="translation-details">
+        <summary>原文</summary>
+        <p class="preserve-lines">{{ titleText.original }}</p>
+      </details>
     </div>
-    <details v-if="titleText.translated" class="translation-details">
-      <summary>原文</summary>
-      <p class="preserve-lines">{{ titleText.original }}</p>
+    <details v-if="summaryLong" class="summary-details">
+      <summary>
+        <span class="summary-clip">{{ summaryText.text }}</span>
+        <span class="summary-toggle"><span class="disclosure-closed">全文</span><span class="disclosure-open">收起全文</span></span>
+      </summary>
+      <p class="summary-full">{{ summaryText.text }}</p>
+      <p v-if="summaryText.translated" class="translation-full">原文：{{ summaryText.original }}</p>
     </details>
-    <div class="chips">
-      <span class="chip">{{ categoryLabel }}</span>
-      <PolicyChip
-        :value="item.policy.china_policy"
-        :label="labelFor(app, item.policy.china_policy)"
-      />
-      <span class="chip">{{ kindLabel }}</span>
-      <span v-if="ended" class="chip chip--danger">当前已结束</span>
+    <div v-else class="message-summary">
+      {{ summaryText.text }}
+      <details v-if="summaryText.translated" class="translation-details">
+        <summary>原文</summary>
+        <p class="preserve-lines">{{ summaryText.original }}</p>
+      </details>
     </div>
-    <p class="message-summary">{{ summaryText.text }}</p>
-    <details v-if="summaryText.translated" class="translation-details">
-      <summary>原文</summary>
-      <p class="preserve-lines">{{ summaryText.original }}</p>
-    </details>
     <dl class="mini-facts">
       <div>
         <dt>免费额度</dt>
@@ -170,29 +191,69 @@ function sourceHost(url: string): string {
           </details>
         </dd>
       </div>
-      <div>
+      <div class="fact-claim">
         <dt>申请条件</dt>
         <dd>
-          {{ claimView.text }}
-          <details v-if="claimView.translated" class="translation-details">
-            <summary>原文</summary>
-            <p class="preserve-lines">{{ claimView.original }}</p>
+          <details v-if="claimLong" class="claim-details">
+            <summary>
+              <span class="claim-clip">{{ claimView.text }}</span>
+              <span class="fact-toggle"><span class="disclosure-closed">全文</span><span class="disclosure-open">收起全文</span></span>
+            </summary>
+            <p class="fact-full">{{ claimView.text }}</p>
+            <p v-if="claimView.translated" class="translation-full">原文：{{ claimView.original }}</p>
           </details>
+          <template v-else>
+            {{ claimView.text }}
+            <details v-if="claimView.translated" class="translation-details">
+              <summary>原文</summary>
+              <p class="preserve-lines">{{ claimView.original }}</p>
+            </details>
+          </template>
         </dd>
       </div>
       <div>
         <dt>绑定支付方式</dt>
         <dd>{{ cardText }}</dd>
       </div>
+      <div>
+        <dt>期限</dt>
+        <dd>
+          {{ expiryView.text }}
+          <details v-if="expiryView.translated" class="translation-details">
+            <summary>原文</summary>
+            <p class="preserve-lines">{{ expiryView.original }}</p>
+          </details>
+        </dd>
+      </div>
     </dl>
-    <p v-if="ended && item.end_reason" class="meta">结束说明：{{ endReasonText.text }}</p>
-    <details v-if="ended && item.end_reason && endReasonText.translated" class="translation-details">
-      <summary>原文</summary>
-      <p class="preserve-lines">{{ endReasonText.original }}</p>
-    </details>
-    <p v-if="hasTranslation" class="meta translation-note">机器翻译，未经核验</p>
-    <section class="source-section" aria-label="消息来源">
-      <h3 class="source-heading">来源（{{ item.sources.length }}）</h3>
+    <div v-if="item.end_reason" class="meta">
+      {{ ended ? '结束说明' : '结束事件说明' }}：{{ endReasonText.text }}
+      <details v-if="endReasonText.translated" class="translation-details">
+        <summary>原文</summary>
+        <p class="preserve-lines">{{ endReasonText.original }}</p>
+      </details>
+    </div>
+    <div class="citation-strip" aria-label="消息引文">
+      <span class="citation-meta">{{ categoryLabel }}</span>
+      <PolicyChip
+        class="citation-meta"
+        :value="item.policy.china_policy"
+        :label="labelFor(app, item.policy.china_policy)"
+      />
+      <span v-if="primarySource" class="citation-source">
+        <SafeExternalLink
+          :value="primarySource.url"
+          :label="sourceHost(primarySource.url) || sourceLabel(primarySource)"
+        />
+        <span> · {{ sourceTypeLabel(primarySource.source_type) }} · {{ accessLabel(primarySource.access) }}</span>
+      </span>
+      <span v-if="extraSourceCount" class="citation-meta">等 {{ item.sources.length }} 个来源</span>
+      <span v-if="discoveredAt">收集 <time :datetime="discoveredAt">{{ formatDate(discoveredAt) }}</time></span>
+      <RouterLink :to="`/resources/${encodeURIComponent(item.resource_id)}`" :aria-label="`查看资源详情：${titleText.text}`">查看资源详情</RouterLink>
+      <span v-if="hasTranslation" class="citation-meta">机器翻译，未经核验</span>
+    </div>
+    <details class="source-section">
+      <summary class="source-heading">来源详情与证据（{{ item.sources.length }}）</summary>
       <ul class="source-list">
         <li v-for="(source, index) in item.sources" :key="`${item.id}-${index}`" class="source">
           <div class="source-head">
@@ -212,32 +273,80 @@ function sourceHost(url: string): string {
           </p>
         </li>
       </ul>
-    </section>
-    <p class="meta">
-      <template v-if="publishedAt">
-        发布时间：<time :datetime="publishedAt">{{ formatDate(publishedAt) }}</time>
-      </template>
-      <template v-else>
-        发现时间：<time :datetime="discoveredAt">{{ formatDate(discoveredAt) }}</time>
-        （来源未说明发布时间）
-      </template>
-      <span v-if="ageText"> · {{ ageText }}</span>
-    </p>
-    <div class="actions">
-      <RouterLink
-        class="button"
-        :to="`/resources/${encodeURIComponent(item.resource_id)}`"
-        :aria-label="`查看资源详情：${titleText.text}`"
-      >
-        查看资源详情
-      </RouterLink>
+      <p class="meta source-time">
+        <template v-if="publishedAt">
+          发布时间：<time :datetime="publishedAt">{{ formatDate(publishedAt) }}</time>
+        </template>
+        <template v-else>
+          发现时间：<time :datetime="discoveredAt">{{ formatDate(discoveredAt) }}</time>
+          （来源未说明发布时间）
+        </template>
+        <span v-if="ageText"> · {{ ageText }}</span>
+      </p>
+    </details>
     </div>
+    <aside class="message-state" aria-label="事件与核验状态" :class="{ 'message-state--changed': item.kind === 'changed' || item.kind === 'expired' }">
+      <span>{{ kindLabel }}</span>
+      <span class="message-unverified">未核验消息</span>
+      <span v-if="ended && item.kind !== 'expired'" class="message-ended">当前已结束</span>
+    </aside>
   </li>
 </template>
 
 <style scoped>
-.translation-details { margin-block-start: 0.35rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg-surface); padding: 0.35rem 0.6rem; }
-.translation-details summary { min-block-size: 2rem; padding-block: 0.15rem; color: var(--color-text-secondary); font-size: 0.8125rem; font-weight: 600; }
-.translation-details p { margin-block: 0.35rem 0; color: var(--color-text-secondary); font-size: 0.875rem; font-weight: 400; line-height: 1.55; }
-.translation-note { color: var(--color-text-tertiary); }
+.message-card { display: grid; grid-template-columns: 2.5rem minmax(0, 1fr) 7rem; gap: 1rem; padding: 0.65rem 0; border-block-end: 1px solid var(--color-border); }
+.message-position { padding-block-start: 0.2rem; color: #8c2f39; font: 500 0.9375rem/1.5 var(--font-mono); font-variant-numeric: tabular-nums; }
+.message-body { min-inline-size: 0; }
+.message-card .record-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: flex-start; gap: 0 0.35rem; margin: 0; }
+.message-card .record-heading .translation-details[open] { flex-basis: 100%; }
+.message-card h2 { margin: 0; font: 600 1.125rem/1.4 var(--font-body); overflow-wrap: anywhere; }
+.message-card .citation-meta { margin: 0; }
+.citation-strip :deep(.chip) { border: 0; padding: 0; background: none; border-radius: 0; font: inherit; letter-spacing: inherit; text-transform: none; }
+.message-summary { margin-block: 0.2rem 0; font: 400 0.875rem/1.55 var(--font-body); overflow-wrap: anywhere; }
+.message-card .mini-facts { display: flex; flex-wrap: wrap; gap: 0.2rem 1.25rem; margin-block: 0.35rem; }
+.message-card .mini-facts > div { display: flex; align-items: baseline; gap: 0.5rem; min-inline-size: 0; padding: 0; border: 0; background: transparent; border-radius: 0; }
+.message-card .mini-facts dt { flex-shrink: 0; font: 500 0.6875rem/1.6 var(--font-ui); color: var(--color-text-secondary); }
+.message-card .mini-facts dd { min-inline-size: 0; margin: 0; font-size: 0.8125rem; overflow-wrap: anywhere; }
+.message-card .fact-claim { flex: 1 1 18rem; max-inline-size: 32rem; }
+.summary-details summary, .claim-details summary { display: flex; gap: 0.4rem; align-items: flex-end; cursor: pointer; list-style: none; }
+.summary-details summary::-webkit-details-marker, .claim-details summary::-webkit-details-marker { display: none; }
+.disclosure-open { display: none; }
+.summary-details[open] .summary-clip, .claim-details[open] .claim-clip, details[open] > summary .disclosure-closed { display: none; }
+details[open] > summary .disclosure-open { display: inline; }
+.summary-clip { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; flex: 1; font: 400 0.875rem/1.55 var(--font-body); }
+.claim-clip { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; flex: 1; font-size: 0.8125rem; }
+.summary-toggle, .fact-toggle { flex-shrink: 0; color: var(--color-text-secondary); font: 400 0.6875rem/1.5 var(--font-mono); text-decoration: underline; text-underline-offset: 0.2em; }
+.summary-full, .fact-full { margin-block: 0.25rem 0; font: 400 0.875rem/1.55 var(--font-body); overflow-wrap: anywhere; }
+.translation-full { margin-block: 0.2rem 0; color: var(--color-text-secondary); font-size: 0.875rem; line-height: 1.55; overflow-wrap: anywhere; }
+.citation-strip { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 1rem; margin-block-start: 0.3rem; color: var(--color-text-secondary); font: 400 0.6875rem/1.5 var(--font-mono); overflow-wrap: anywhere; }
+.citation-source { min-inline-size: 0; }
+.citation-strip a { text-decoration: underline; text-underline-offset: 0.2em; }
+.message-state { display: flex; flex-direction: column; gap: 0.35rem; align-items: flex-end; padding-block-start: 0.25rem; font: 600 0.75rem/1.5 var(--font-ui); }
+.message-state--changed, .message-card--ended .message-state { color: #8c2f39; }
+.message-unverified { color: var(--color-text-secondary); font-size: 0.6875rem; font-weight: 400; }
+.message-ended { color: #8c2f39; font-size: 0.6875rem; }
+.message-card--ended h2 { color: var(--color-text-secondary); }
+.message-card .source-section { margin-block-start: 0.1rem; padding-block-start: 0; border-block-start: 0; }
+.source-heading { cursor: pointer; margin: 0; padding-block: 0.1rem; font: 400 0.6875rem/1.5 var(--font-mono); color: var(--color-text-secondary); }
+.message-card .source-list { margin-block-start: 0.65rem; }
+.message-card .meta { margin-block: 0.35rem; font-size: 0.75rem; }
+.message-card .source-time { margin-block: 0.45rem 0; }
+.translation-details { display: inline-block; vertical-align: baseline; margin-inline-start: 0.35rem; max-inline-size: 100%; }
+.translation-details summary { display: inline; cursor: pointer; color: var(--color-text-secondary); font: 400 0.6875rem/1.5 var(--font-mono); }
+.translation-details p { display: block; margin-block: 0.25rem 0; color: var(--color-text-secondary); font-size: 0.875rem; font-weight: 400; line-height: 1.55; overflow-wrap: anywhere; }
+@media (max-width: 1099px) {
+  .message-card { grid-template-columns: 2rem minmax(0, 1fr); gap: 0.5rem 0.75rem; }
+  .message-state { grid-column: 2; grid-row: 1; flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: 0.75rem; padding: 0; }
+  .message-body { grid-column: 2; }
+  .message-position { grid-row: 1 / span 2; }
+}
+@media (max-width: 599px) {
+  .message-card { grid-template-columns: 1.5rem minmax(0, 1fr); }
+  .message-card .mini-facts { flex-direction: column; }
+  .message-card .mini-facts > div { display: block; }
+  .message-card .fact-claim { flex: none; max-inline-size: none; }
+  .message-card .fact-claim dd { display: block; }
+  .message-card .mini-facts dt { display: inline; margin-inline-end: 0.5rem; }
+  .message-card .mini-facts dd { display: inline; }
+}
 </style>

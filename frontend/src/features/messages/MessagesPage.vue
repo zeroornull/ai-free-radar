@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter, type LocationQuery } from 'vue-router'
 import type { AppRead, NewsItem } from '@/api/types'
 import { useAppQuery, useMessagesQuery, type MessageFilters } from '@/api/queries'
+import { formatDate } from '@/app/presentation'
 import PageHeading from '@/components/shared/PageHeading.vue'
 import EmptyState from '@/components/shared/EmptyState.vue'
 import QueryError from '@/components/shared/QueryError.vue'
@@ -94,6 +95,17 @@ watch(
   { immediate: true },
 )
 const messages = computed(() => messagesData.value ?? retainedMessages.value)
+const currentMessages = computed(() => messages.value.filter((message) => !message.ended))
+const endedMessages = computed(() => messages.value.filter((message) => message.ended))
+const eventCounts = computed(() => {
+  const counts = { new: 0, changed: 0, expired: 0, restored: 0 }
+  for (const message of messages.value) counts[message.kind] += 1
+  return counts
+})
+const latestCollection = computed(() => messages.value.reduce((latest, message) => {
+  const value = message.discovered_at ?? ''
+  return value > latest ? value : latest
+}, ''))
 
 const appErrorMessage = computed(() => appError.value?.message ?? '请求失败，请稍后重试。')
 const messagesErrorMessage = computed(
@@ -113,7 +125,11 @@ function clearFilters() {
 </script>
 
 <template>
-  <PageHeading eyebrow="消息动态" title="消息动态" />
+  <div v-if="messagesData !== undefined || messages.length" class="collection-strip" aria-label="当前消息集合">
+    <span v-if="latestCollection">最近收集 <time :datetime="latestCollection">{{ formatDate(latestCollection) }}</time></span>
+    <span>当前结果 {{ messages.length }} 条 · 新消息 {{ eventCounts.new }} · 有更新 {{ eventCounts.changed }} · 结束事件 {{ eventCounts.expired }} · 恢复有效 {{ eventCounts.restored }} · 未核验 {{ messages.length }}</span>
+  </div>
+  <PageHeading title="消息动态" />
 
   <template v-if="appPending">
     <Skeleton class="mb-4 h-44 w-full" />
@@ -147,13 +163,30 @@ function clearFilters() {
           :message="messagesErrorMessage"
           @retry="refetchMessages()"
         />
-        <ul v-if="messages.length" class="record-list message-list">
-          <MessageCard
-            v-for="message in messages"
-            :key="message.id"
-            :item="message"
-          />
-        </ul>
+        <template v-if="messages.length">
+          <ol v-if="currentMessages.length" class="record-list message-list" aria-label="当前有效消息">
+            <MessageCard
+              v-for="(message, index) in currentMessages"
+              :key="message.id"
+              :item="message"
+              :position="index + 1"
+            />
+          </ol>
+          <section v-if="endedMessages.length" class="ended-section" aria-labelledby="ended-heading">
+            <div class="ended-heading">
+              <h2 id="ended-heading">已结束</h2>
+              <p>当前已结束的历史记录 · {{ endedMessages.length }} 条</p>
+            </div>
+            <ol class="record-list message-list" :start="currentMessages.length + 1" aria-label="当前已结束消息">
+              <MessageCard
+                v-for="(message, index) in endedMessages"
+                :key="message.id"
+                :item="message"
+                :position="currentMessages.length + index + 1"
+              />
+            </ol>
+          </section>
+        </template>
         <EmptyState
           v-else-if="filtered"
           title="没有符合条件的消息"
@@ -176,3 +209,12 @@ function clearFilters() {
     </template>
   </template>
 </template>
+
+<style scoped>
+.collection-strip { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.35rem 1.5rem; padding-block: 0.65rem; border-block-end: 1px solid var(--color-border); color: var(--color-text-secondary); font: 400 0.6875rem/1.6 var(--font-mono); font-variant-numeric: tabular-nums; }
+.message-list { display: block; margin: 0; padding: 0; list-style: none; }
+.ended-section { margin-block-start: 1.75rem; }
+.ended-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem 1rem; padding-block-end: 0.5rem; border-block-end: 1px solid #1b1a17; }
+.ended-heading h2 { margin: 0; font: 600 0.875rem/1.5 var(--font-ui); }
+.ended-heading p { margin: 0; color: var(--color-text-secondary); font-size: 0.8125rem; }
+</style>

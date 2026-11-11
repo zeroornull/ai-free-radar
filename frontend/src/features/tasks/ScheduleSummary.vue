@@ -15,7 +15,7 @@ const regionText = computed(() => labelFor(props.app, props.app.default_scope.re
 </script>
 
 <template>
-  <section class="panel" aria-labelledby="schedule-heading">
+  <section class="panel schedule-summary" aria-labelledby="schedule-heading">
     <h2 id="schedule-heading">每日默认收集计划</h2>
     <p class="muted">
       默认按类别收集新的免费消息与更新，不自动核验已有资源。严格核验只在任务中指定资源标识时执行。
@@ -36,3 +36,9 @@ const regionText = computed(() => labelFor(props.app, props.app.default_scope.re
     <p class="muted">计划与默认范围在本地配置文件中设置。下方选择只用于本次手动任务；如需核验，请填写资源标识。</p>
   </section>
 </template>
+
+<style scoped>
+.schedule-summary { min-inline-size: 0; margin: 0; }
+.schedule-summary > p { font-size: 0.875rem; line-height: 1.75; }
+.schedule-summary > p:last-child { padding-block-start: 0.75rem; border-block-start: 1px solid var(--color-border); font: 400 0.75rem/1.7 var(--font-ui); }
+</style>

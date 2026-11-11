@@ -129,7 +129,7 @@ function clearFilters() {
 </script>
 
 <template>
-  <PageHeading eyebrow="资源库" title="资源库">
+  <PageHeading title="资源库">
     <template #actions>
       <Button type="button" variant="outline" class="h-11" :disabled="backfillPending || Boolean(app?.active_run)" @click="backfillSources">
         {{ backfillPending ? '正在发起…' : '补齐存量消息' }}
@@ -170,7 +170,7 @@ function clearFilters() {
           :message="resourcesErrorMessage"
           @retry="refetchResources()"
         />
-        <ul v-if="resources.length" class="record-list resource-grid">
+        <ul v-if="resources.length" class="record-list resource-index" aria-label="资源索引">
           <ResourceCard
             v-for="item in resources"
             :key="item.id ?? `${item.provider}-${item.service}`"
@@ -212,3 +212,7 @@ function clearFilters() {
     </template>
   </template>
 </template>
+
+<style scoped>
+.resource-index { display: block; margin: 0; padding: 0; list-style: none; border-block-start: 1px solid var(--color-text); }
+</style>

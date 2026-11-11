@@ -388,7 +388,7 @@ const errorMessage = computed(() => appError.value?.message ?? '请求失败，�
 </script>
 
 <template>
-  <PageHeading eyebrow="设置" title="设置" />
+  <PageHeading title="设置" />
 
   <Skeleton v-if="settingsPending && !settings" class="mb-4 h-64 w-full" />
   <QueryError
@@ -408,12 +408,12 @@ const errorMessage = computed(() => appError.value?.message ?? '请求失败，�
     </Alert>
     <p v-if="saveNotice" class="test-ok" role="status" aria-live="polite">{{ saveNotice }}</p>
 
-    <Card class="mt-4">
+    <Card class="settings-section" role="region" aria-labelledby="model-settings-heading">
       <CardHeader>
-        <CardTitle>模型</CardTitle>
+        <CardTitle id="model-settings-heading" role="heading" aria-level="2">模型</CardTitle>
         <CardDescription>用于运行研究的模型提供商与接口凭证。</CardDescription>
       </CardHeader>
-      <CardContent class="grid gap-4">
+      <CardContent class="settings-fields grid gap-4">
         <div class="grid gap-1">
           <Label for="setting-model">模型</Label>
           <input
@@ -486,7 +486,7 @@ const errorMessage = computed(() => appError.value?.message ?? '请求失败，�
           </div>
         </div>
 
-        <div class="flex items-center gap-2">
+        <div class="settings-test flex items-center gap-2">
           <Button type="button" variant="outline" :disabled="testPending" @click="runTest('model')">
             {{ testTarget === 'model' ? '测试中…' : '测试连接' }}
           </Button>
@@ -503,12 +503,12 @@ const errorMessage = computed(() => appError.value?.message ?? '请求失败，�
       </CardContent>
     </Card>
 
-    <Card class="mt-4">
+    <Card class="settings-section" role="region" aria-labelledby="search-settings-heading">
       <CardHeader>
-        <CardTitle>搜索</CardTitle>
+        <CardTitle id="search-settings-heading" role="heading" aria-level="2">搜索</CardTitle>
         <CardDescription>用于资料检索的搜索提供商与接口凭证。</CardDescription>
       </CardHeader>
-      <CardContent class="grid gap-4">
+      <CardContent class="settings-fields grid gap-4">
         <div class="grid gap-1">
           <Label for="setting-search-provider">搜索提供商</Label>
           <NativeSelect
@@ -570,7 +570,7 @@ const errorMessage = computed(() => appError.value?.message ?? '请求失败，�
           </div>
         </div>
 
-        <div class="flex items-center gap-2">
+        <div class="settings-test flex items-center gap-2">
           <Button type="button" variant="outline" :disabled="testPending" @click="runTest('search')">
             {{ testTarget === 'search' ? '测试中…' : '测试连接' }}
           </Button>
@@ -587,12 +587,12 @@ const errorMessage = computed(() => appError.value?.message ?? '请求失败，�
       </CardContent>
     </Card>
 
-    <Card class="mt-4">
+    <Card class="settings-section" role="region" aria-labelledby="schedule-settings-heading">
       <CardHeader>
-        <CardTitle>定时</CardTitle>
+        <CardTitle id="schedule-settings-heading" role="heading" aria-level="2">定时</CardTitle>
         <CardDescription>每日自动研究的时间安排。</CardDescription>
       </CardHeader>
-      <CardContent class="grid gap-4">
+      <CardContent class="settings-fields settings-fields--single grid gap-4">
         <div class="flex items-center gap-2">
           <Label for="setting-schedule-enabled">启用每日定时研究</Label>
           <Checkbox
@@ -619,12 +619,12 @@ const errorMessage = computed(() => appError.value?.message ?? '请求失败，�
       </CardContent>
     </Card>
 
-    <Card class="mt-4">
+    <Card class="settings-section" role="region" aria-labelledby="scope-settings-heading">
       <CardHeader>
-        <CardTitle>默认范围</CardTitle>
+        <CardTitle id="scope-settings-heading" role="heading" aria-level="2">默认范围</CardTitle>
         <CardDescription>发起研究时的默认 API 类别与地区条件。</CardDescription>
       </CardHeader>
-      <CardContent class="grid gap-4">
+      <CardContent class="settings-fields settings-fields--single grid gap-4">
         <fieldset v-if="app" class="scope-fieldset">
           <legend class="scope-legend">默认 API 类别</legend>
           <div class="checkbox-grid">
@@ -663,9 +663,9 @@ const errorMessage = computed(() => appError.value?.message ?? '请求失败，�
       </CardContent>
     </Card>
 
-    <Card class="mt-4">
+    <Card class="settings-section" role="region" aria-labelledby="service-settings-heading">
       <CardHeader>
-        <CardTitle>服务设置（只读）</CardTitle>
+        <CardTitle id="service-settings-heading" role="heading" aria-level="2">服务设置（只读）</CardTitle>
         <CardDescription>监听地址与数据目录在启动时确定，此处不可修改。</CardDescription>
       </CardHeader>
       <CardContent>
@@ -697,7 +697,7 @@ const errorMessage = computed(() => appError.value?.message ?? '请求失败，�
   min-block-size: 2.75rem;
   padding: 0.45rem 0.7rem;
   border: 1px solid var(--color-control-border);
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   color: var(--color-text);
   background-color: var(--color-bg-surface);
 }
@@ -706,16 +706,56 @@ const errorMessage = computed(() => appError.value?.message ?? '请求失败，�
 }
 .settings-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.6rem var(--space-2);
-  margin-block: var(--space-3) 0;
-  padding-block-start: var(--space-2);
-  border-block-start: 1px solid var(--color-border);
+  gap: 0.75rem 1.25rem;
+  margin-block: 1.5rem 0;
+  padding-block: 1.25rem;
+  border-block-start: 1px solid var(--color-text);
+  font: 400 0.8125rem/1.6 var(--font-ui);
 }
 .test-ok {
   color: var(--color-success);
 }
 .test-fail {
   color: var(--color-error);
+}
+.settings-section {
+  display: grid;
+  grid-template-columns: minmax(12rem, 0.6fr) minmax(0, 2fr);
+  align-items: start;
+  column-gap: 2.5rem;
+  row-gap: 1rem;
+  margin-block: 1.75rem 0;
+  padding-block: 1.25rem 0;
+  overflow: visible;
+  border: 0;
+  border-block-start: 1px solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-text);
+}
+.settings-section :deep([data-slot="card-header"]),
+.settings-section :deep([data-slot="card-content"]) { min-inline-size: 0; padding: 0; border-radius: 0; }
+.settings-section :deep([data-slot="card-title"]) { font: 600 1.25rem/1.4 var(--font-body); }
+.settings-section :deep([data-slot="card-description"]) { max-inline-size: 32ch; margin-block-start: 0.5rem; font: 400 0.8125rem/1.75 var(--font-body); color: var(--color-text-secondary); }
+.settings-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem 1.5rem; }
+.settings-fields--single { grid-template-columns: minmax(0, 1fr); }
+.settings-fields > div { min-inline-size: 0; }
+.settings-fields :deep(label), .settings-fields .scope-legend { font: 500 0.8125rem/1.5 var(--font-ui); }
+.settings-fields :deep([data-slot="badge"]) { justify-self: start; inline-size: fit-content; margin-block-start: 0.2rem; }
+.settings-fields .control { min-inline-size: 0; font: 400 0.875rem/1.5 var(--font-ui); }
+.settings-fields--single > .flex, .settings-test { flex-wrap: wrap; }
+.settings-test { grid-column: 1 / -1; align-items: baseline; padding-block-start: 0.75rem; border-block-start: 1px solid var(--color-border); }
+.settings-test > p { flex: 1 1 15rem; margin: 0; font: 400 0.75rem/1.65 var(--font-ui); }
+.settings-section :deep(.facts dd) { overflow-wrap: anywhere; flex-wrap: wrap; }
+@media (max-width: 1099px) {
+  .settings-section { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+  .settings-section :deep([data-slot="card-description"]) { max-inline-size: 65ch; }
+}
+@media (max-width: 600px) {
+  .settings-fields { grid-template-columns: minmax(0, 1fr); }
+  .settings-fields--single > .flex { align-items: center; }
 }
 </style>

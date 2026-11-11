@@ -48,12 +48,12 @@ const refreshStatusText = computed(() => {
 </script>
 
 <template>
-  <PageHeading eyebrow="收集任务" title="收集任务" />
+  <PageHeading title="收集任务" />
 
-  <template v-if="app">
+  <div v-if="app" class="task-workbench">
     <ScheduleSummary :app="app" />
     <StartTaskForm :app="app" />
-  </template>
+  </div>
   <template v-else-if="appPending">
     <Skeleton class="mb-4 h-56 w-full" />
     <Skeleton class="h-72 w-full" />
@@ -64,7 +64,7 @@ const refreshStatusText = computed(() => {
     @retry="refetchApp()"
   />
 
-  <section aria-labelledby="task-history">
+  <section class="task-history" aria-labelledby="task-history">
     <div class="section-heading">
       <h2 id="task-history">任务历史</h2>
       <Button
@@ -105,3 +105,12 @@ const refreshStatusText = computed(() => {
     </template>
   </section>
 </template>
+
+<style scoped>
+.task-workbench { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 2.5rem; align-items: start; }
+.task-history { margin-block-start: 2.5rem; }
+.task-history > .muted { font: 400 0.75rem/1.6 var(--font-ui); margin-block: 0.75rem 1.25rem; }
+@media (max-width: 1099px) {
+  .task-workbench { grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }
+}
+</style>

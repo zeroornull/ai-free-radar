@@ -147,7 +147,7 @@ const recheckPending = recheckMutation.isPending
 </script>
 
 <template>
-  <PageHeading eyebrow="资源详情" :title="headingTitle" />
+  <PageHeading :title="headingTitle" />
   <RouterLink class="back-link" to="/resources">返回资源库</RouterLink>
 
   <Skeleton v-if="detailPending" class="h-64 w-full" />
@@ -156,15 +156,22 @@ const recheckPending = recheckMutation.isPending
     :title="isNotFound ? '资源未找到' : '资源暂不可用'"
     :detail="isNotFound ? '未找到此资源。请返回资源库选择已有资源。' : errorMessage"
   />
-  <template v-else-if="resource">
+  <article v-else-if="resource" class="resource-article" :aria-label="headingTitle">
     <QueryError v-if="backgroundError" :message="errorMessage" @retry="refetchDetail()" />
-    <div class="chips">
-      <StatusBadge :value="hasCollectedSources(resource) ? 'success' : 'pending'" :label="collectionLabel(resource)" />
-      <span class="chip">{{ policyStatusLabel(resource.status) }}</span>
-      <span class="meta">首次发现：{{ formatDate(resource.first_seen_at) }}</span>
-    </div>
+    <header class="resource-article-meta">
+      <div class="chips">
+        <StatusBadge :value="hasCollectedSources(resource) ? 'success' : 'pending'" :label="collectionLabel(resource)" />
+        <span class="chip">{{ policyStatusLabel(resource.status) }}</span>
+      </div>
+      <dl class="resource-publication">
+        <div><dt>类别</dt><dd>{{ labelFor(app, resource.category) }}</dd></div>
+        <div><dt>免费形式</dt><dd>{{ labelFor(app, resource.free_type) }}</dd></div>
+        <div><dt>首次发现</dt><dd>{{ formatDate(resource.first_seen_at) }}</dd></div>
+        <div v-if="resource.id"><dt>登记号</dt><dd><bdi>{{ resource.id }}</bdi></dd></div>
+      </dl>
+    </header>
 
-    <section class="panel" aria-labelledby="resource-collected">
+    <section class="panel resource-chapter" aria-labelledby="resource-collected">
       <h2 id="resource-collected">收集到的免费消息</h2>
       <p class="muted">
         每个活动保留最近一次收集报告与来源链接。报告参数来自消息内容，不代表已核验政策；
@@ -173,12 +180,12 @@ const recheckPending = recheckMutation.isPending
       <label class="check-option"><input v-model="showEnded" type="checkbox" /> 显示历史（含已结束活动）</label>
       <CollectedMessageList :items="collectedMessages" :show-ended="showEnded" />
     </section>
-    <section v-if="messageTimeline.length" class="panel" aria-labelledby="resource-messages">
+    <section v-if="messageTimeline.length" class="panel resource-chapter" aria-labelledby="resource-messages">
       <h2 id="resource-messages">消息动态</h2>
       <p class="muted">收集过程中记录的新增、变化、结束与恢复事件，按发现时间保留。</p>
       <CollectedMessageList :items="messageTimeline" :show-ended="true" :link-resources="true" />
     </section>
-    <details class="panel" aria-labelledby="resource-policy">
+    <details class="panel resource-chapter resource-policy" aria-labelledby="resource-policy">
       <summary id="resource-policy">可选：官方政策核验与接入信息</summary>
       <div class="chips">
         <StatusBadge :value="resource.status" :label="policyStatusLabel(resource.status)" />
@@ -261,7 +268,7 @@ const recheckPending = recheckMutation.isPending
 
 
 
-    <section class="panel" aria-labelledby="resource-review">
+    <section class="panel resource-chapter" aria-labelledby="resource-review">
       <h2 id="resource-review">人工判断</h2>
       <p class="muted">人工判断不改变官方政策与证据字段。被忽略的资源不再进入收集消息与简报。</p>
 
@@ -365,8 +372,8 @@ const recheckPending = recheckMutation.isPending
       <p v-else class="muted">尚无人工处理记录。</p>
     </section>
 
-    <section class="panel">
-      <h2>关键事实与来源</h2>
+    <section class="panel resource-chapter" aria-labelledby="resource-evidence">
+      <h2 id="resource-evidence">关键事实与来源</h2>
       <p class="muted">
         这里只列出按需核验时保存的官方依据。收集消息与社区来源不代表已核验政策，
         没有官方依据的结论不能作为正式政策。
@@ -375,28 +382,29 @@ const recheckPending = recheckMutation.isPending
     </section>
 
     <ResourceHistory :history="history" />
-  </template>
+  </article>
 </template>
 
-<style>
-.review-note-form {
-  margin-block-start: var(--space-2);
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
+<style scoped>
+.resource-article { max-inline-size: 70rem; min-inline-size: 0; margin-inline: auto; overflow-wrap: anywhere; }
+.resource-article-meta { padding-block: 0.75rem 1.25rem; }
+.resource-publication { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 1rem 0 0; gap: 1rem; }
+.resource-publication > div { min-inline-size: 0; border-inline-start: 1px solid var(--color-border); padding-inline-start: 0.85rem; }
+.resource-publication > div:first-child { border-inline-start: 0; padding-inline-start: 0; }
+.resource-publication dt { margin-block-end: 0.3rem; font-family: var(--font-ui); font-size: 0.6875rem; font-weight: 500; color: var(--color-text-secondary); }
+.resource-publication dd { margin: 0; font-size: 0.875rem; line-height: 1.6; font-variant-numeric: tabular-nums; }
+.resource-publication bdi { font-family: var(--font-mono); font-size: 0.75rem; }
+.resource-chapter { margin-block: 0; padding: 1.5rem 0; border: 0; border-block-start: 1px solid var(--color-border); }
+.resource-chapter > h2 { margin-block: 0 0.7rem; font-family: var(--font-body); font-size: 1.375rem; line-height: 1.3; font-weight: 600; }
+.resource-chapter > p { max-inline-size: 72ch; }
+.resource-policy > summary { min-block-size: 2.75rem; font-family: var(--font-body); font-size: 1.25rem; font-weight: 600; line-height: 1.5; cursor: pointer; }
+.resource-policy[open] > summary { margin-block-end: 1rem; }
+.review-note-form { margin-block-start: 1.25rem; display: flex; flex-direction: column; gap: 0.4rem; }
 .review-note-form .actions { margin-block: 0; }
-.note-input {
-  font: inherit;
-  font-size: 1rem;
-  inline-size: 100%;
-  min-block-size: 2.75rem;
-  padding: 0.5rem 0.7rem;
-  border: 1px solid var(--color-control-border);
-  border-radius: var(--radius-sm);
-  color: var(--color-text);
-  background-color: var(--color-bg-surface);
-  line-height: 1.55;
-  resize: vertical;
+.note-input { font: inherit; font-size: 1rem; inline-size: 100%; min-block-size: 2.75rem; padding: 0.5rem 0.7rem; border: 1px solid var(--color-control-border); color: var(--color-text); background-color: var(--color-bg-surface); line-height: 1.55; resize: vertical; }
+@media (max-width: 699px) {
+  .resource-publication { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .resource-publication > div:nth-child(odd) { border-inline-start: 0; padding-inline-start: 0; }
+  .resource-chapter { padding-block: 1.25rem; }
 }
 </style>

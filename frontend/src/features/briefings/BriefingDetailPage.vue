@@ -81,7 +81,7 @@ async function downloadBriefing(): Promise<void> {
 </script>
 
 <template>
-  <PageHeading eyebrow="简报正文" title="简报正文" />
+  <PageHeading title="简报正文" />
 
   <p class="sr-only" role="status" aria-live="polite">{{ announcement }}</p>
 
@@ -96,13 +96,13 @@ async function downloadBriefing(): Promise<void> {
     </template>
     <QueryError v-else :message="errorMessage" @retry="refetchBriefing()" />
   </template>
-  <template v-else-if="briefing && run">
+  <div v-else-if="briefing && run" class="briefing-layout">
     <QueryError
       v-if="backgroundError"
       :message="errorMessage"
       @retry="refetchBriefing()"
     />
-    <div class="actions">
+    <aside class="actions briefing-tools" aria-label="简报操作">
       <Button :disabled="downloading" @click="downloadBriefing">
         {{ downloading ? '下载中…' : '下载 Markdown' }}
       </Button>
@@ -112,9 +112,9 @@ async function downloadBriefing(): Promise<void> {
       <Button as-child variant="ghost" class="h-11">
         <RouterLink to="/briefings">返回简报历史</RouterLink>
       </Button>
-    </div>
+    </aside>
 
-    <Alert v-if="downloadError" variant="destructive">
+    <Alert v-if="downloadError" class="briefing-download-error" variant="destructive">
       <AlertTitle>简报下载失败</AlertTitle>
       <AlertDescription>{{ downloadError }}</AlertDescription>
       <div class="actions">
@@ -123,11 +123,25 @@ async function downloadBriefing(): Promise<void> {
         </Button>
       </div>
     </Alert>
-    <p class="muted">
+    <p class="muted briefing-imprint">
       任务 <bdi>{{ run.id }}</bdi> · {{ labelFor(app, run.trigger) }} ·
-      {{ labelFor(app, run.status) }} · {{ formatDate(run.started_at) }}
+      {{ labelFor(app, run.status) }} · <time :datetime="run.started_at">{{ formatDate(run.started_at) }}</time>
     </p>
 
     <BriefingContent :html="briefing.html" />
-  </template>
+  </div>
 </template>
+
+<style scoped>
+.briefing-layout { display: grid; grid-template-columns: minmax(0, 720px) minmax(10rem, 1fr); column-gap: 2.5rem; align-items: start; }
+.briefing-layout > :not(.briefing-tools) { grid-column: 1; min-inline-size: 0; }
+.briefing-tools { grid-column: 2; grid-row: 1 / span 4; display: flex; flex-direction: column; align-items: stretch; margin: 0; padding-block: 1rem; border-block-start: 1px solid var(--color-border); }
+.briefing-tools :deep(a), .briefing-tools :deep(button) { justify-content: flex-start; }
+.briefing-imprint { margin-block: 0 1.75rem; padding-block: 0.85rem; border-block: 1px solid var(--color-border); font: 400 0.6875rem/1.8 var(--font-ui); overflow-wrap: anywhere; }
+.briefing-imprint bdi { font-family: var(--font-mono); }
+.briefing-download-error { margin-block-end: 1rem; }
+@media (max-width: 1099px) {
+  .briefing-layout { grid-template-columns: minmax(0, 720px); }
+  .briefing-tools { grid-column: 1; grid-row: auto; flex-direction: row; flex-wrap: wrap; gap: 0.5rem; padding-block: 0 1rem; border-block-start: 0; }
+}
+</style>

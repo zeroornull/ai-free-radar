@@ -127,9 +127,9 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
-  <section class="panel" aria-labelledby="start-task">
+  <section class="panel task-form" aria-labelledby="start-task">
     <h2 id="start-task">发起收集任务</h2>
-    <p id="scope-help">
+    <p id="scope-help" class="scope-help">
       默认按类别收集新的免费消息与更新，并保留来源链接，不自动核验已有资源。
       如需严格核验，请在下方填写资源标识；填写后本次只核验这些资源。
       任务不注册账号、不领取权益、不调用候选 API。
@@ -138,7 +138,7 @@ async function submit(): Promise<void> {
       <strong>任务未发起</strong>
       <p>{{ displayError }}</p>
     </div>
-    <form novalidate @submit.prevent="submit">
+    <form class="task-fields" novalidate @submit.prevent="submit">
       <fieldset
         ref="fieldsetRef"
         class="scope-fieldset"
@@ -183,6 +183,7 @@ async function submit(): Promise<void> {
           id="verify-ids"
           v-model="verifyIdsDraft"
           name="resource_ids"
+          class="verify-ids-input"
           rows="2"
           aria-describedby="verify-help"
           placeholder="例如：res_abc123, res_def456"
@@ -202,16 +203,20 @@ async function submit(): Promise<void> {
 
 <style scoped>
 .verify-ids-input {
-  font: inherit;
-  font-size: 1rem;
+  font: 400 0.8125rem/1.55 var(--font-mono);
   inline-size: 100%;
   min-block-size: 2.75rem;
   padding: 0.5rem 0.7rem;
   border: 1px solid var(--color-control-border);
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   color: var(--color-text);
   background-color: var(--color-bg-surface);
-  line-height: 1.55;
   resize: vertical;
 }
+.task-form { min-inline-size: 0; margin: 0; }
+.scope-help { max-inline-size: 65ch; color: var(--color-text-secondary); font-size: 0.875rem; line-height: 1.75; }
+.task-fields { margin-block-start: 1.5rem; }
+.task-fields :deep(label), .scope-legend { font-family: var(--font-ui); font-size: 0.8125rem; }
+.task-fields .field { margin-block-end: 1.25rem; }
+.task-fields .form-note { font-size: 0.75rem; line-height: 1.65; }
 </style>

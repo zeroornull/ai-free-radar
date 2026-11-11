@@ -63,7 +63,7 @@ function entries(dict?: Record<string, string>) {
 </script>
 
 <template>
-  <form class="panel filter-form toolbar" aria-label="筛选资源库" @submit.prevent="submit">
+  <form class="panel filter-form toolbar resource-filters" aria-label="筛选资源库" @submit.prevent="submit">
     <div class="toolbar-head">
       <h2 class="toolbar-title">筛选条件</h2>
       <p class="count-chip" role="status" aria-live="polite">共 {{ count }} 项资源</p>
@@ -115,3 +115,17 @@ function entries(dict?: Record<string, string>) {
     <p class="form-note">筛选仅改变当前显示，不修改收集范围或每日默认配置。</p>
   </form>
 </template>
+
+<style scoped>
+.resource-filters { margin-block-end: 1rem; padding-block: 1rem; }
+.resource-filters .toolbar-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.5rem 1rem; margin-block-end: 0.75rem; }
+.resource-filters .toolbar-title { margin: 0; font-family: var(--font-ui); font-size: 0.8125rem; line-height: 1.5; font-weight: 600; }
+.resource-filters .count-chip { margin: 0; font-family: var(--font-ui); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.resource-filters .toolbar-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem 1rem; }
+.resource-filters .field { min-inline-size: 0; }
+.resource-filters .checkbox-row { margin-block-start: 0.8rem; }
+.resource-filters .form-note { max-inline-size: 72ch; }
+@media (max-width: 699px) {
+  .resource-filters .toolbar-grid { grid-template-columns: minmax(0, 1fr); }
+}
+</style>

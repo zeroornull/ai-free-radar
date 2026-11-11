@@ -25,9 +25,9 @@ const errorMessage = computed(
 </script>
 
 <template>
-  <PageHeading eyebrow="简报历史" title="简报历史" />
+  <PageHeading title="简报历史" />
 
-  <p class="muted">
+  <p class="muted archive-introduction">
     每项任务独立保存 Markdown 简报；同日多次运行分别保留。简报列出初始清单或本次增量，完整记录见资源库。
   </p>
 
@@ -57,3 +57,7 @@ const errorMessage = computed(
     </EmptyState>
   </template>
 </template>
+
+<style scoped>
+.archive-introduction { max-inline-size: 72ch; margin-block: 0 1.75rem; font-size: 0.875rem; line-height: 1.75; }
+</style>

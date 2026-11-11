@@ -47,25 +47,9 @@ onBeforeUnmount(() => {
   <header ref="header" class="site-header">
     <div class="shell header-inner">
       <RouterLink class="brand" to="/">
-        <span class="brand-mark" aria-hidden="true">
-          <svg
-            width="32"
-            height="32"
-            viewBox="0 0 32 32"
-            fill="none"
-            stroke="currentColor"
-            aria-hidden="true"
-            focusable="false"
-          >
-            <circle cx="16" cy="16" r="13" stroke-width="2" />
-            <circle cx="16" cy="16" r="7" stroke-width="2" />
-            <line x1="16" y1="16" x2="25.2" y2="6.8" stroke-width="2" />
-            <circle cx="16" cy="16" r="2" fill="currentColor" stroke="none" />
-          </svg>
-        </span>
         <span class="brand-text">
           <span class="brand-name">AIFreeRadar</span>
-          <span class="brand-tagline">免费 API 政策雷达</span>
+          <span class="brand-tagline">免费 AI API 消息雷达</span>
         </span>
       </RouterLink>
       <nav class="site-nav" aria-label="主要导航">
@@ -93,33 +77,21 @@ onBeforeUnmount(() => {
           设置
         </RouterLink>
       </nav>
-      <span role="status" aria-live="polite">
-        <button class="button ghost" type="button" @click="toggleAutoRefresh">
-          {{ autoRefreshEnabled ? '暂停自动刷新' : '恢复自动刷新' }}
-        </button>
-      </span>
+      <div class="header-tools">
+        <span class="local-chip">仅本机使用</span>
+        <span role="status" aria-live="polite">
+          <button class="button ghost" type="button" :aria-pressed="autoRefreshEnabled" @click="toggleAutoRefresh">
+            {{ autoRefreshEnabled ? '暂停自动刷新' : '恢复自动刷新' }}
+          </button>
+        </span>
+      </div>
     </div>
   </header>
   <main id="main" class="shell app-main" tabindex="-1">
-    <aside class="policy-note" aria-label="核查范围说明">
-      <svg
-        class="note-icon"
-        width="20"
-        height="20"
-        viewBox="0 0 24 24"
-        aria-hidden="true"
-        focusable="false"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-      >
-        <circle cx="12" cy="12" r="9" />
-        <line x1="12" y1="11" x2="12" y2="16" />
-        <circle cx="12" cy="7.5" r="1" fill="currentColor" stroke="none" />
-      </svg>
-      “消息动态”中的免费信息均来自来源报告，标注<strong>未核验消息</strong>；只有资源库中按需核验过的官方政策才显示“政策已核验”。所有资源均<strong>未实测调用</strong>，网络访问<strong>未实测</strong>。未说明的额度或条件按“未说明”保留；需绑定支付方式不代表需要付费，明确收费的机会不收录。
-    </aside>
+    <details class="policy-note">
+      <summary>来源报告未经核验 · 未实测调用与网络访问</summary>
+      <p>“消息动态”中的免费信息均来自来源报告，标注<strong>未核验消息</strong>；只有资源库中按需核验过的官方政策才显示“政策已核验”。所有资源均<strong>未实测调用</strong>，网络访问<strong>未实测</strong>。未说明的额度或条件按“未说明”保留；需绑定支付方式不代表需要付费，明确收费的机会不收录。</p>
+    </details>
     <aside v-if="activeRun" class="notice" aria-label="正在运行的任务">
       研究任务运行中。<RouterLink :to="`/tasks/${activeRun.id}`">查看运行状态</RouterLink>。任务共用写入锁，完成后可发起下一项任务。
     </aside>
@@ -129,28 +101,3 @@ onBeforeUnmount(() => {
     AIFreeRadar · 免费 API 消息雷达 · 时间按本机时区显示 · 所有研究记录保存在本机
   </footer>
 </template>
-
-<style>
-.app-main {
-  display: flex;
-  flex-direction: column;
-}
-.app-main > .page-heading {
-  order: -1;
-}
-.site-nav a { display: inline-flex; align-items: center; gap: 0.4rem; }
-.nav-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-inline-size: 1.35rem;
-  padding: 0.05rem 0.4rem;
-  border-radius: var(--radius-pill);
-  background: var(--color-accent-solid);
-  color: var(--color-on-accent);
-  font-size: 0.72rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.5;
-}
-</style>
