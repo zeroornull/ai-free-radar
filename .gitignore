@@ -17,3 +17,5 @@ frontend/node_modules/
 frontend/.vite/
 frontend/*.tsbuildinfo
 aifreeradar/static/app/
+.omp/
+frontend/.impeccable/
