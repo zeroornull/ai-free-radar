@@ -10,6 +10,7 @@ from html import escape
 from urllib.parse import quote, urlsplit
 
 from .models import (
+    ACCESS_MODE_LABELS,
     CATEGORY_LABELS,
     CHINA_POLICY_LABELS,
     FREE_TYPE_LABELS,
@@ -40,11 +41,26 @@ SOURCE_TYPE_LABELS = {
     "community": "社区",
     "github": "GitHub",
     "search": "搜索",
+    "catalog": "公开目录",
 }
-SOURCE_ACCESS_LABELS = {"page": "网页原文", "snippet": "搜索摘要"}
+SOURCE_ACCESS_LABELS = {
+    "page": "网页原文",
+    "snippet": "搜索摘要",
+    "feed": "订阅原始条目",
+    "catalog": "目录原始记录",
+}
+GAP_STOP_LABELS = {
+    "gap_resolved": "已补齐证据",
+    "no_new_evidence": "未发现新增证据",
+    "budget_exhausted": "检索/抓取预算用尽",
+    "provider_failed": "检索服务失败",
+    "duplicate_query": "查询重复，未重复执行",
+    "pending": "待执行",
+}
 
 FIELD_LABELS = {
     "category": "类别",
+    "access_mode": "接入方式",
     "models": "可用模型",
     "free_type": "免费形式",
     "quota": "免费额度",
@@ -59,8 +75,9 @@ FIELD_LABELS = {
     "region_restrictions": "地区限制",
     "china_policy": "中国大陆政策",
     "status": "资源状态",
-    "api_url": "API 入口",
     "docs_url": "API 文档",
+    "quota_facts": "结构化额度",
+    "model_deployments": "模型部署映射",
 }
 
 
@@ -105,6 +122,7 @@ def _display(value: object, field: str = "") -> str:
         "free_type": FREE_TYPE_LABELS,
         "china_policy": CHINA_POLICY_LABELS,
         "category": CATEGORY_LABELS,
+        "access_mode": ACCESS_MODE_LABELS,
     }.get(field, {})
     if isinstance(value, (str, int, float)):
         return mapping.get(str(value), str(value))
@@ -144,12 +162,20 @@ def _resource_details(resource: Resource) -> list[str]:
         f"- 提供商与类别：{markdown_text(resource.provider)} / {CATEGORY_LABELS[resource.category]}",
         f"- 可用模型：{markdown_text(_display(resource.models))}",
         f"- 免费形式：{FREE_TYPE_LABELS[resource.free_type]}",
+        f"- 接入方式：{ACCESS_MODE_LABELS[resource.access_mode]}",
         f"- 免费额度及刷新周期：{markdown_text(resource.quota)} {markdown_text(resource.quota_unit)}；{markdown_text(resource.refresh_cycle)}",
         f"- 限速：{markdown_text(resource.rate_limit)}",
+        *_fact_details(resource.quota_facts, resource.model_deployments, resource.fact_warnings),
         f"- 注册、领取及支付条件：{markdown_text(payment)}",
         f"- 有效期：{markdown_text(expiry)}",
         f"- 地区政策：{CHINA_POLICY_LABELS[resource.china_policy]}；{markdown_text(resource.region_restrictions)}；网络访问未实测",
-        f"- 使用入口及 API 文档：{markdown_link('API 入口', resource.api_url)}；{markdown_link('API 文档', resource.docs_url)}",
+        (
+            f"- 使用入口：{markdown_link('产品页面', resource.docs_url)}"
+            "（产品内免费额度，非 API）"
+            if resource.access_mode == "product"
+            else f"- 使用入口及 API 文档：{markdown_link('API 入口', resource.api_url)}；"
+            f"{markdown_link('API 文档', resource.docs_url)}"
+        ),
         "- 官方依据：",
         *_sources(resource, official_only=True),
         f"- 核查时间：{markdown_text(_time(resource.last_success_at))}；未实测调用",
@@ -160,7 +186,7 @@ def _resource_details(resource: Resource) -> list[str]:
 
 def _changed_values(change: Change) -> list[str]:
     items: list[str] = []
-    for field in IMPORTANT_FIELDS:
+    for field in (*IMPORTANT_FIELDS, "quota_facts", "model_deployments"):
         before, after = change.before.get(field), change.after.get(field)
         if (
             field == "models"
@@ -170,10 +196,97 @@ def _changed_values(change: Change) -> list[str]:
         ):
             continue
         if before != after:
-            items.append(
-                f"{FIELD_LABELS.get(field, field)}：{_display(before, field)} → {_display(after, field)}"
-            )
+            if field == "quota_facts":
+                label = f"{_quota_change_label(before)} → {_quota_change_label(after)}"
+            elif field == "model_deployments":
+                label = f"{_deployment_change_label(before)} → {_deployment_change_label(after)}"
+            else:
+                label = f"{_display(before, field)} → {_display(after, field)}"
+            items.append(f"{FIELD_LABELS.get(field, field)}：{label}")
     return items
+
+
+def _amount_label(amount: float | None) -> str:
+    return "未给出具体数值" if amount is None else f"{amount:g}"
+
+
+def _quota_fact_lines(facts: Sequence[object]) -> list[str]:
+    lines: list[str] = []
+    for fact in facts:
+        condition = str(getattr(fact, "condition", "")).strip() or "无额外条件"
+        scope = str(getattr(fact, "scope", "")).strip() or UNKNOWN
+        period = str(getattr(fact, "period", "")).strip() or UNKNOWN
+        unit = str(getattr(fact, "unit", "")).strip()
+        models = [str(item) for item in getattr(fact, "model_ids", []) if str(item).strip()]
+        models_text = "、".join(models) if models else "未限定模型"
+        phrase = str(getattr(fact, "value_phrase", "")).strip()
+        phrase_text = f"（原文表述：{markdown_text(phrase)}）" if phrase else ""
+        lines.append(
+            f"- 结构化额度：{_amount_label(getattr(fact, 'amount', None))} {markdown_text(unit)}"
+            f" / {markdown_text(period)}；作用域：{markdown_text(scope)}；"
+            f"条件：{markdown_text(condition)}；适用模型：{markdown_text(models_text)}{phrase_text}"
+        )
+        lines.append(
+            f"  - 额度依据：{markdown_link('来源链接', str(getattr(fact, 'source_url', '')))}；"
+            f"引文：{markdown_text(str(getattr(fact, 'quote', '')))}"
+        )
+    return lines
+
+
+def _deployment_lines(mappings: Sequence[object]) -> list[str]:
+    lines: list[str] = []
+    for mapping in mappings:
+        lines.append(
+            f"- 模型部署：{markdown_text(str(getattr(mapping, 'provider', '')))} / "
+            f"{markdown_text(str(getattr(mapping, 'model_id', '')))}"
+            f"（基础模型：{markdown_text(str(getattr(mapping, 'base_model', '')))}）"
+        )
+        lines.append(
+            f"  - 映射依据：{markdown_link('来源链接', str(getattr(mapping, 'source_url', '')))}；"
+            f"引文：{markdown_text(str(getattr(mapping, 'quote', '')))}"
+        )
+    return lines
+
+
+def _fact_warning_lines(warnings: Sequence[str]) -> list[str]:
+    return [f"- 可选事实提示：{markdown_text(warning)}" for warning in warnings if warning]
+
+
+def _fact_details(
+    quota_facts: Sequence[object],
+    deployments: Sequence[object],
+    warnings: Sequence[str],
+) -> list[str]:
+    return [
+        *_quota_fact_lines(quota_facts),
+        *_deployment_lines(deployments),
+        *_fact_warning_lines(warnings),
+    ]
+
+
+def _quota_change_label(values: object) -> str:
+    if not isinstance(values, list) or not values:
+        return UNKNOWN
+    parts = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        parts.append(
+            f"{_amount_label(value.get('amount'))} {value.get('unit', '')}"
+            f"/{value.get('period', UNKNOWN)}（{value.get('scope', 'unspecified')}）"
+        )
+    return "；".join(parts) or UNKNOWN
+
+
+def _deployment_change_label(values: object) -> str:
+    if not isinstance(values, list) or not values:
+        return UNKNOWN
+    return "；".join(
+        f"{value.get('provider', '')} / {value.get('model_id', '')}"
+        f"（{value.get('base_model', '')}）"
+        for value in values
+        if isinstance(value, dict)
+    ) or UNKNOWN
 
 
 
@@ -259,6 +372,7 @@ def _news_details(message: NewsItem) -> list[str]:
         *heading,
         f"- 提供商与类别：{markdown_text(policy.provider)} / {CATEGORY_LABELS[policy.category]}",
         f"- 事件：{MESSAGE_KIND_LABELS.get(message.kind, message.kind)}",
+        f"- 接入方式：{ACCESS_MODE_LABELS[policy.access_mode]}",
         f"- 免费机会：{_bilingual(message.summary_zh, message.summary) if message.summary_zh.strip() else markdown_text(message.summary)}",
         (
             f"- 免费形式：{FREE_TYPE_LABELS[policy.free_type] if policy.free_type != 'unknown' else UNKNOWN}；"
@@ -271,6 +385,7 @@ def _news_details(message: NewsItem) -> list[str]:
             f"- 地区报告：中国大陆政策：{CHINA_POLICY_LABELS[policy.china_policy] if policy.china_policy != 'unknown' else UNKNOWN}；"
             f"{_translated_or(policy.region_restrictions_zh, policy.region_restrictions)}；网络访问未实测"
         ),
+        *_fact_details(policy.quota_facts, policy.model_deployments, policy.fact_warnings),
         "- 核验状态：来源报告，未经官方政策逐项核验；正式核查结论以资源详情为准。",
         f"- 发现时间：{markdown_text(_time(message.discovered_at))}；来源发布时间：{published}",
         "- 来源：",
@@ -295,6 +410,11 @@ def _news_details(message: NewsItem) -> list[str]:
             f"  - {_source_label(source)}：{markdown_link('来源链接', source.url)}；"
             f"来源发布时间：{source_time}；摘录：{markdown_text(source.excerpt)}"
         )
+        if source.source_id or source.external_id:
+            lines.append(
+                f"  - 来源身份：{markdown_text(source.source_id or '未标注来源')} / "
+                f"{markdown_text(source.external_id or '未标注条目')}"
+            )
     return lines
 
 
@@ -311,6 +431,37 @@ def _news_section(messages: Sequence[NewsItem]) -> list[str]:
         lines.extend(_news_details(message))
         lines.append("")
     return lines
+
+def _research_trace_section(run: Run) -> list[str]:
+    lines = ["## 证据补搜", ""]
+    if not run.research_traces:
+        lines.extend(["无。", ""])
+        return lines
+    for trace in run.research_traces:
+        goal = trace.goal.strip() or trace.query
+        lines.append(
+            f"- {CATEGORY_LABELS[trace.category]}：{markdown_text(goal)}；"
+            f"查询：{markdown_text(trace.query)}；"
+            f"停止原因：{GAP_STOP_LABELS.get(trace.stop_reason, trace.stop_reason)}；"
+            f"搜索调用：{trace.search_calls} 次；记录时间：{markdown_text(_time(trace.observed_at))}"
+        )
+        if trace.trigger_url:
+            lines.append(f"  - 触发页面：{markdown_link('触发页面', trace.trigger_url)}")
+        if trace.result_urls:
+            links = "；".join(
+                markdown_link(f"结果 {index}", url)
+                for index, url in enumerate(trace.result_urls, start=1)
+            )
+            lines.append(f"  - 检索结果：{links}")
+        if trace.new_evidence_urls:
+            links = "；".join(
+                markdown_link(f"新增证据 {index}", url)
+                for index, url in enumerate(trace.new_evidence_urls, start=1)
+            )
+            lines.append(f"  - 新增证据：{links}")
+        lines.append("")
+    return lines
+
 
 
 def _discovery_label(discovery: LeadDiscovery) -> str:
@@ -460,7 +611,13 @@ def _verification_sections(
             lines.extend(
                 [
                     f"- {markdown_text(resource.service)}：{markdown_text(reason)}；不作为正式推荐。",
-                    f"  - 线索入口：{markdown_link('API 入口', resource.api_url)}；{markdown_link('API 文档', resource.docs_url)}",
+                    (
+                        f"  - 线索入口：{markdown_link('产品页面', resource.docs_url)}"
+                        "（产品内额度，非 API）"
+                        if resource.access_mode == "product"
+                        else f"  - 线索入口：{markdown_link('API 入口', resource.api_url)}；"
+                        f"{markdown_link('API 文档', resource.docs_url)}"
+                    ),
                     *_sources(resource),
                 ]
             )
@@ -530,6 +687,9 @@ def render_briefing(
         unsuccessful = {}
         if not messages:
             lines.extend(["本次无新增或变化", ""])
+
+    if run.research_traces:
+        lines.extend(_research_trace_section(run))
 
     lines.extend(["## 核查失败 / 未完成事项", ""])
     issues = list(dict.fromkeys([*failures, *run.notes, *([run.error] if run.error else [])]))

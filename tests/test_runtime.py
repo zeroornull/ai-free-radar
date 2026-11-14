@@ -1150,6 +1150,7 @@ async def test_backfill_translations_rejects_a_second_backfill(runtime, monkeypa
 def test_zh_fields_never_enter_message_change_detection(runtime):
     _settings, repository = runtime
     assert MESSAGE_FACT_FIELDS == (
+        "access_mode",
         "free_type",
         "quota",
         "quota_unit",

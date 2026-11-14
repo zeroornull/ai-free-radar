@@ -33,6 +33,7 @@ from aifreeradar.models import (
 )
 from aifreeradar.research import (
     BASELINE_QUERIES,
+    PRODUCT_BASELINE_QUERIES,
     COLLECTION_INSTRUCTIONS,
     COLLECTION_PAGE_LIMIT,
     MAX_BATCH_FETCH,
@@ -495,7 +496,12 @@ async def test_research_records_search_fetch_and_model_usage(tmp_path):
     )
     await researcher.research(Scope(categories=[Category.TEXT]), [])
     stats = researcher.last_stats
-    assert stats.search_calls == len(search.calls) == 6
+    api_queries = list(BASELINE_QUERIES[Category.TEXT])
+    product_queries = list(PRODUCT_BASELINE_QUERIES[Category.TEXT])
+    product_end = len(api_queries) + len(product_queries)
+    assert search.calls[: len(api_queries)] == api_queries
+    assert search.calls[len(api_queries) : product_end] == product_queries
+    assert stats.search_calls == len(search.calls) >= product_end
     assert stats.fetch_calls == 1
     assert stats.model_requests >= 1
     for value in (
@@ -1273,14 +1279,17 @@ async def test_discovery_prepends_fixed_baseline_queries_before_model(tmp_path):
 
     await researcher.research(Scope(categories=[Category.TEXT]), [])
 
-    expected = list(BASELINE_QUERIES[Category.TEXT])
-    assert len(expected) == 6
-    assert search.calls == expected
-    cjk = [query for query in expected if any("\u4e00" <= char <= "\u9fff" for char in query)]
-    assert cjk == expected[:3]
-    assert not any("\u4e00" <= char <= "\u9fff" for query in expected[3:] for char in query)
-    # Six of the sixteen search requests were spent before the model produced anything.
-    assert researcher.last_stats.search_calls == 6
+    api_queries = list(BASELINE_QUERIES[Category.TEXT])
+    product_queries = list(PRODUCT_BASELINE_QUERIES[Category.TEXT])
+    expected = api_queries + product_queries
+    assert len(api_queries) == 6
+    assert search.calls[: len(expected)] == expected
+    assert researcher.last_stats.search_calls == len(search.calls) >= len(expected)
+    assert [trace.query for trace in researcher.last_research_traces] == search.calls[len(expected) :]
+    cjk = [query for query in api_queries if any("\u4e00" <= char <= "\u9fff" for char in query)]
+    assert cjk == api_queries[:3]
+    assert not any("\u4e00" <= char <= "\u9fff" for query in api_queries[3:] for char in query)
+    # Six API baseline requests, then product discovery queries, then one-layer gap followups.
 
 
 @pytest.mark.asyncio
@@ -1443,6 +1452,89 @@ async def test_collection_accepts_community_snippet_with_unknown_quota(tmp_path)
     assert reported.sources[0].access == "snippet"
     assert reported.sources[0].source_type == "community"
     assert reported.policy.quota == "未说明" and reported.policy.quota_unit == "未说明"
+
+
+@pytest.mark.asyncio
+async def test_collection_accepts_source_backed_product_credits_without_api_url(tmp_path):
+    source_text = (
+        "WorkBuddy web agent offers 1000 free credits per month for new users; "
+        "credits are used inside the WorkBuddy product."
+    )
+    message = collected_message(
+        policy=reported_policy(
+            provider="WorkBuddy",
+            service="WorkBuddy 产品额度",
+            provider_domain="workbuddy.example",
+            service_key="workbuddy-credits",
+            access_mode="product",
+            api_url="未说明",
+            docs_url="未说明",
+            free_type="ongoing",
+            quota="1000",
+            quota_unit="credits",
+            refresh_cycle="per month",
+        ),
+        sources=[
+            MessageSource(
+                url=SOURCE,
+                title="Free credits",
+                excerpt=source_text,
+                source_type="official",
+                access="page",
+            )
+        ],
+    )
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path),
+        model=collection_model(message),
+        search_client=cast(SearchClient, SearchTransport()),
+        fetcher=cast(PublicPageFetcher, SourceTransport(text=source_text)),
+    )
+
+    batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+
+    assert not batch.failures
+    reported, = batch.messages
+    assert reported.policy.access_mode == "product"
+    assert reported.policy.api_url == "未说明"
+    assert reported.policy.docs_url == "未说明"
+    assert reported.sources[0].excerpt == source_text
+
+
+class ProductQueryFailingSearch(SearchTransport):
+    """Fail only for product discovery queries, after the API baseline succeeds."""
+
+    def __init__(self):
+        super().__init__()
+        self.product_queries = set(PRODUCT_BASELINE_QUERIES[Category.TEXT])
+
+    async def search(self, query):
+        if query in self.product_queries:
+            self.calls.append(query)
+            raise RuntimeError("product discovery unavailable")
+        return await super().search(query)
+
+
+@pytest.mark.asyncio
+async def test_product_baseline_failure_is_reported_without_invented_results(tmp_path):
+    search = ProductQueryFailingSearch()
+    researcher = HarnessResearcher(
+        Settings(data_dir=tmp_path, gap_search_limit=0),
+        model=collection_model(collected_message()),
+        search_client=cast(SearchClient, search),
+        fetcher=cast(PublicPageFetcher, SourceTransport()),
+    )
+
+    batch = await researcher.research(Scope(categories=[Category.TEXT]), [])
+
+    api_queries = list(BASELINE_QUERIES[Category.TEXT])
+    product_queries = list(PRODUCT_BASELINE_QUERIES[Category.TEXT])
+    assert search.calls == api_queries + [product_queries[0]]
+    assert any(
+        "search failed" in failure and "no fallback" in failure for failure in batch.failures
+    )
+    assert not any(message.policy.access_mode == "product" for message in batch.messages)
+    assert all(message.sources[0].url == SOURCE for message in batch.messages)
 
 
 @pytest.mark.asyncio

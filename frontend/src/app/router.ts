@@ -8,6 +8,7 @@ import TaskDetailPage from '@/features/tasks/TaskDetailPage.vue'
 import BriefingsPage from '@/features/briefings/BriefingsPage.vue'
 import BriefingDetailPage from '@/features/briefings/BriefingDetailPage.vue'
 import SettingsPage from '@/features/settings/SettingsPage.vue'
+import SourcesPage from '@/features/sources/SourcesPage.vue'
 import ErrorPage from '@/components/shared/ErrorPage.vue'
 
 declare module 'vue-router' {
@@ -44,6 +45,12 @@ const routes: RouteRecordRaw[] = [
     name: 'briefing-detail',
     component: BriefingDetailPage,
     meta: { title: '简报正文' },
+  },
+  {
+    path: '/sources',
+    name: 'sources',
+    component: SourcesPage,
+    meta: { title: '来源管理' },
   },
   {
     path: '/settings',

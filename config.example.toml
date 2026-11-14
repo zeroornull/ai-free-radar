@@ -30,6 +30,42 @@ port = 18765
 schedule_enabled = true
 schedule_time = "09:00"
 
+# Optional one-layer evidence-gap followup budget per category segment. The
+# existing six baseline searches remain unchanged; 0 disables gap searches and
+# the value is bounded to 0..4. Each gap is a single non-recursive layer and
+# shares the segment search/fetch budgets. A catalog zero price never proves a
+# free offer, and a search-only hit never closes a policy evidence gap.
+gap_search_limit = 3
+
+# Optional managed discovery sources used as startup defaults. The /sources
+# page stores edits in the database and those overrides take precedence over
+# this file. The example below is a placeholder, not a real service; replace or
+# remove it. kind is web, feed, or catalog; source_type is official, community,
+# github, or catalog. Saving a source performs no network request.
+# [[sources]]
+# name = "Example official pricing page"
+# url = "https://example.com/pricing"
+# kind = "web"
+# categories = ["text"]
+# source_type = "official"
+# official_domain = "example.com"
+# enabled = true
+# interval_seconds = 86400
+
+# Product-credit example, not an API endpoint: WorkBuddy's official pricing
+# docs list a free experience plan and its monthly credits. Hosting that page
+# only helps discovery; collected offers are labeled "产品内额度（非 API）"
+# and the app does not verify quota or availability. The credits definition is
+# at https://www.workbuddy.cn/docs/workbuddy/Credits. Do not add an API URL for
+# this service unless a source establishes one.
+# [[sources]]
+# name = "WorkBuddy pricing (product credits, not an API)"
+# url = "https://www.workbuddy.cn/docs/workbuddy/Pricing"
+# kind = "web"
+# categories = ["text"]
+# source_type = "official"
+# official_domain = "workbuddy.cn"
+
 # Optional official entry pages for discovery, grouped by category. This is a
 # supplement, not a restriction: community, GitHub, and search snippets are
 # also accepted sources for collected messages. TOML-only: the settings page

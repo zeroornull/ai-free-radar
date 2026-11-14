@@ -19,6 +19,10 @@ import type {
   SettingsResetRequest,
   SettingsTestRead,
   SettingsTestRequest,
+  SourceDefinition,
+  SourceEntry,
+  SourceRead,
+  SourceSnapshot,
   TaskDetailRead,
 } from './types'
 
@@ -404,5 +408,111 @@ export function useTestSettingsMutation() {
         body: JSON.stringify(payload),
       }),
     retry: false,
+  })
+}
+
+
+export function useSourcesQuery() {
+  return useQuery<SourceRead[], Error>({
+    queryKey: ['sources'],
+    queryFn: () => request<SourceRead[]>('/api/sources'),
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useSaveSourceMutation() {
+  const queryClient = useQueryClient()
+  return useMutation<SourceRead, Error, SourceDefinition>({
+    mutationFn: (definition) => {
+      const id = definition.id
+      if (!id) throw new Error('来源 ID 不能为空')
+      return request<SourceRead>(`/api/sources/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(definition),
+      })
+    },
+    retry: false,
+    onSuccess: (source) => {
+      const id = source.definition.id
+      queryClient.setQueryData<SourceRead[]>(['sources'], (previous) =>
+        previous === undefined
+          ? [source]
+          : previous.map((item) => (item.definition.id === id ? source : item)),
+      )
+      void queryClient.invalidateQueries({ queryKey: ['sources', 'entries', id] })
+      void queryClient.invalidateQueries({ queryKey: ['sources', 'snapshots', id] })
+    },
+  })
+}
+
+export function useSourceEntriesQuery(
+  id: MaybeRefOrGetter<string>,
+  limit = 100,
+  offset: MaybeRefOrGetter<number> = 0,
+) {
+  return useQuery<SourceEntry[], Error>({
+    queryKey: computed(
+      () => ['sources', 'entries', toValue(id), limit, toValue(offset)] as const,
+    ),
+    queryFn: () => {
+      const params = new URLSearchParams({
+        limit: String(limit),
+        offset: String(toValue(offset)),
+      })
+      return request<SourceEntry[]>(
+        `/api/sources/${encodeURIComponent(toValue(id))}/entries?${params.toString()}`,
+      )
+    },
+    enabled: computed(() => Boolean(toValue(id))),
+    retry: false,
+    refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useSourceSnapshotsQuery(id: MaybeRefOrGetter<string>, limit = 20) {
+  return useQuery<SourceSnapshot[], Error>({
+    queryKey: computed(() => ['sources', 'snapshots', toValue(id), limit] as const),
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: String(limit) })
+      return request<SourceSnapshot[]>(
+        `/api/sources/${encodeURIComponent(toValue(id))}/snapshots?${params.toString()}`,
+      )
+    },
+    enabled: computed(() => Boolean(toValue(id))),
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useSourceSnapshotQuery(snapshotId: MaybeRefOrGetter<string>) {
+  return useQuery<SourceSnapshot, Error>({
+    queryKey: computed(() => ['sources', 'snapshot', toValue(snapshotId)] as const),
+    queryFn: () =>
+      request<SourceSnapshot>(
+        `/api/source-snapshots/${encodeURIComponent(toValue(snapshotId))}`,
+      ),
+    enabled: computed(() => Boolean(toValue(snapshotId))),
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useReplaySourceRulesMutation(sourceId: MaybeRefOrGetter<string>) {
+  const queryClient = useQueryClient()
+  return useMutation<SourceEntry[], Error, void>({
+    mutationFn: () =>
+      request<SourceEntry[]>(
+        `/api/sources/${encodeURIComponent(toValue(sourceId))}/replay`,
+        { method: 'POST' },
+      ),
+    retry: false,
+    onSuccess: () => {
+      const id = toValue(sourceId)
+      void queryClient.invalidateQueries({ queryKey: ['sources', 'entries', id] })
+      void queryClient.invalidateQueries({ queryKey: ['sources'], exact: true })
+    },
   })
 }

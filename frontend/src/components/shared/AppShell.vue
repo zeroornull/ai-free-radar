@@ -16,6 +16,7 @@ const navGroup = computed(() => {
   if (route.path === '/resources' || route.path.startsWith('/resources/')) return 'resources'
   if (route.path === '/briefings' || route.path.startsWith('/briefings/')) return 'briefings'
   if (route.path === '/tasks' || route.path.startsWith('/tasks/')) return 'tasks'
+  if (route.path === '/sources' || route.path.startsWith('/sources/')) return 'sources'
   if (route.path === '/settings' || route.path.startsWith('/settings/')) return 'settings'
   return ''
 })
@@ -69,6 +70,9 @@ onBeforeUnmount(() => {
         </RouterLink>
         <RouterLink to="/tasks" :aria-current="navGroup === 'tasks' ? 'page' : undefined">
           研究任务
+        </RouterLink>
+        <RouterLink to="/sources" :aria-current="navGroup === 'sources' ? 'page' : undefined">
+          来源管理
         </RouterLink>
         <RouterLink to="/briefings" :aria-current="navGroup === 'briefings' ? 'page' : undefined">
           简报历史

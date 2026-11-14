@@ -8,6 +8,7 @@ import { formatDate, labelFor } from '@/app/presentation'
 import PageHeading from '@/components/shared/PageHeading.vue'
 import FactsList from '@/components/shared/FactsList.vue'
 import CollectedMessageList from '@/components/shared/CollectedMessageList.vue'
+import SafeExternalLink from '@/components/shared/SafeExternalLink.vue'
 import QueryError from '@/components/shared/QueryError.vue'
 import ErrorPage from '@/components/shared/ErrorPage.vue'
 import { Button } from '@/components/ui/button'
@@ -34,6 +35,28 @@ const {
 const run = computed(() => taskData.value?.run)
 const messages = computed(() => taskData.value?.messages ?? [])
 const changes = computed(() => taskData.value?.changes ?? [])
+const traces = computed(() => run.value?.research_traces ?? [])
+
+const STOP_REASON_LABELS: Record<string, string> = {
+  gap_resolved: '缺口已补',
+  no_new_evidence: '无新证据',
+  budget_exhausted: '预算用尽',
+  provider_failed: '检索失败',
+  duplicate_query: '重复查询',
+  pending: '待执行',
+}
+
+function stopReasonLabel(reason: string | undefined): string {
+  return STOP_REASON_LABELS[reason ?? ''] ?? (reason ?? '未记录')
+}
+
+function linkLabel(url: string): string {
+  try {
+    return `打开 ${new URL(url).hostname}`
+  } catch {
+    return '打开来源链接'
+  }
+}
 
 const isNotFound = computed(
   () => taskError.value instanceof ApiError && taskError.value.status === 404,
@@ -155,6 +178,59 @@ watch(
       <RunStats :stats="run.stats" />
     </section>
 
+    <section v-if="traces.length" class="task-chapter" aria-labelledby="run-traces-heading">
+      <h2 id="run-traces-heading">补搜轨迹</h2>
+      <p class="muted">
+        首轮观察到的免费或试用线索触发一层补搜，与主流程共用本任务的检索及抓取预算；停止原因说明该次补搜为何结束。
+      </p>
+      <ol class="trace-list">
+        <li v-for="trace in traces" :key="`${trace.gap_id}-${trace.observed_at}`">
+          <FactsList>
+            <dt>类别</dt>
+            <dd>{{ labelFor(app, trace.category) }}</dd>
+            <dt>补搜查询</dt>
+            <dd><bdi>{{ trace.query }}</bdi></dd>
+            <dt>补搜目的</dt>
+            <dd>{{ trace.goal }}</dd>
+            <dt>停止原因</dt>
+            <dd>{{ stopReasonLabel(trace.stop_reason) }}</dd>
+            <dt>检索次数</dt>
+            <dd>{{ trace.search_calls }}</dd>
+            <dt>触发页面</dt>
+            <dd><SafeExternalLink :value="trace.trigger_url" label="打开触发补搜的页面" /></dd>
+            <template v-if="(trace.result_urls ?? []).length">
+              <dt>检索返回链接</dt>
+              <dd class="trace-links">
+                <SafeExternalLink
+                  v-for="url in trace.result_urls ?? []"
+                  :key="`result-${url}`"
+                  :value="url"
+                  :label="linkLabel(url)"
+                />
+              </dd>
+            </template>
+            <template v-if="(trace.new_evidence_urls ?? []).length">
+              <dt>新增证据链接</dt>
+              <dd class="trace-links">
+                <SafeExternalLink
+                  v-for="url in trace.new_evidence_urls ?? []"
+                  :key="`new-${url}`"
+                  :value="url"
+                  :label="linkLabel(url)"
+                />
+              </dd>
+            </template>
+            <template v-if="(trace.source_ids ?? []).length">
+              <dt>相关来源</dt>
+              <dd><bdi>{{ (trace.source_ids ?? []).join('、') }}</bdi></dd>
+            </template>
+            <dt>记录时间</dt>
+            <dd>{{ formatDate(trace.observed_at) }}</dd>
+          </FactsList>
+        </li>
+      </ol>
+    </section>
+
     <section v-if="run.error" class="task-chapter task-chapter--failure" aria-labelledby="run-failure-heading">
       <h2 id="run-failure-heading">失败原因</h2>
       <p class="failure preserve-lines">{{ run.error }}</p>
@@ -209,6 +285,12 @@ watch(
 .change-register { list-style: none; margin: 0; padding: 0; }
 .change-register > li { padding-block: 0.85rem; border-block-end: 1px solid var(--color-border); font-size: 0.875rem; overflow-wrap: anywhere; }
 .task-chapter > .note-list { max-inline-size: 75ch; }
+.trace-list { margin: 0; padding: 0; list-style: none; }
+.trace-list > li { padding-block: 1rem; border-block-end: 1px solid var(--color-border); }
+.trace-list > li:first-child { padding-block-start: 0.25rem; }
+.trace-list :deep(.facts) { margin-block: 0.35rem 0; }
+.trace-list :deep(.trace-links) { display: flex; flex-direction: column; gap: 0.2rem; }
+.trace-list :deep(.trace-links a) { overflow-wrap: anywhere; }
 @media (max-width: 480px) {
   .task-article > .actions { align-items: stretch; }
   .task-article > .actions :deep(a), .task-article > .actions :deep(button) { flex: 1 1 auto; }

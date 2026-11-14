@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { RouterLink } from 'vue-router'
+import { accessModeHint, accessModeLabel, accessModeOf } from '@/api/accessMode'
 import type { NewsItem } from '@/api/types'
 import { useAppQuery } from '@/api/queries'
 import { formatDate, labelFor } from '@/app/presentation'
 import PolicyChip from '@/components/shared/PolicyChip.vue'
 import SafeExternalLink from '@/components/shared/SafeExternalLink.vue'
+import PolicyFacts from '@/components/shared/PolicyFacts.vue'
 
 const props = defineProps<{ item: NewsItem; position: number }>()
 
@@ -40,10 +41,15 @@ const sourceTypeLabels: Record<string, string> = {
 const accessLabels: Record<string, string> = {
   page: '页面内容',
   snippet: '搜索片段',
+  feed: '订阅源条目',
+  catalog: '目录记录',
 }
 
 const categoryLabel = computed(() => labelFor(app.value, props.item.policy.category))
 const kindLabel = computed(() => kindLabels[props.item.kind] ?? props.item.kind)
+const accessMode = computed(() => accessModeOf(props.item.policy))
+const accessModeText = computed(() => accessModeLabel(app.value, props.item.policy))
+const accessModeTooltip = computed(() => accessModeHint(props.item.policy))
 const ended = computed(() => props.item.ended)
 
 const titleText = computed(() => localizedText(props.item.title, props.item.title_zh))
@@ -226,6 +232,7 @@ function sourceHost(url: string): string {
         </dd>
       </div>
     </dl>
+    <PolicyFacts :policy="item.policy" />
     <div v-if="item.end_reason" class="meta">
       {{ ended ? '结束说明' : '结束事件说明' }}：{{ endReasonText.text }}
       <details v-if="endReasonText.translated" class="translation-details">
@@ -240,6 +247,11 @@ function sourceHost(url: string): string {
         :value="item.policy.china_policy"
         :label="labelFor(app, item.policy.china_policy)"
       />
+      <span
+        class="badge access-mode-badge"
+        :class="`access-mode-badge--${accessMode}`"
+        :title="accessModeTooltip"
+      >{{ accessModeText }}</span>
       <span v-if="primarySource" class="citation-source">
         <SafeExternalLink
           :value="primarySource.url"
@@ -265,6 +277,13 @@ function sourceHost(url: string): string {
           </div>
           <p v-if="sourceHost(source.url)" class="source-host">{{ sourceHost(source.url) }}</p>
           <p class="source-excerpt">{{ source.excerpt }}</p>
+          <p v-if="source.source_id" class="meta">
+            来源条目：<bdi>{{ source.source_id }}</bdi>
+            <template v-if="source.external_id"> · <bdi>{{ source.external_id }}</bdi></template>
+          </p>
+          <p v-else-if="source.access === 'feed' || source.access === 'catalog'" class="meta">
+            该来源为{{ accessLabel(source.access) }}，未抓取文章页面原文。
+          </p>
           <p v-if="source.access === 'snippet'" class="meta">
             以上为搜索或来源片段，并非页面全文引用。
           </p>
@@ -320,6 +339,10 @@ details[open] > summary .disclosure-open { display: inline; }
 .translation-full { margin-block: 0.2rem 0; color: var(--color-text-secondary); font-size: 0.875rem; line-height: 1.55; overflow-wrap: anywhere; }
 .citation-strip { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 1rem; margin-block-start: 0.3rem; color: var(--color-text-secondary); font: 400 0.6875rem/1.5 var(--font-mono); overflow-wrap: anywhere; }
 .citation-source { min-inline-size: 0; }
+.access-mode-badge { flex-shrink: 0; font-family: var(--font-ui); }
+.access-mode-badge--api { color: var(--color-success); border-color: var(--color-success-border); }
+.access-mode-badge--product { color: var(--color-warning); border-color: var(--color-warning-border); }
+.access-mode-badge--unknown { color: var(--color-text-secondary); }
 .citation-strip a { text-decoration: underline; text-underline-offset: 0.2em; }
 .message-state { display: flex; flex-direction: column; gap: 0.35rem; align-items: flex-end; padding-block-start: 0.25rem; font: 600 0.75rem/1.5 var(--font-ui); }
 .message-state--changed, .message-card--ended .message-state { color: #8c2f39; }

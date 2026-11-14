@@ -48,6 +48,8 @@ _EDITABLE_NON_SECRET = (
     "schedule_enabled",
     "schedule_time",
     "default_scope",
+    "sources",
+    "gap_search_limit",
 )
 
 

@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .models import Category, Scope
+from .models import Category, Scope, SourceDefinition
 
 
 class ConfigurationError(ValueError):
@@ -34,6 +34,8 @@ class Settings(BaseModel):
     schedule_time: str = "09:00"
     default_scope: Scope = Field(default_factory=Scope)
     direct_sources: dict[str, list[str]] = Field(default_factory=dict)
+    sources: list[SourceDefinition] = Field(default_factory=list)
+    gap_search_limit: int = Field(default=3, ge=0, le=4, strict=True)
     host: Literal["127.0.0.1"] = "127.0.0.1"
     port: int = Field(default=18765, ge=1, le=65535)
 

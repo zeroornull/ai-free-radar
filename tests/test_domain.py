@@ -735,3 +735,42 @@ def test_duplicate_url_within_one_call_inserts_once(repository):
     )
     assert repository.record_discoveries("run-dup", [lead, lead.model_copy()]) == 1
     assert len(repository.discoveries_for_run("run-dup")) == 1
+
+
+def test_access_mode_change_is_a_substantive_change_with_labels(repository):
+    original = official_policy()
+    apply(repository, [original], "before-access-mode")
+    later = BASE_TIME + timedelta(days=1)
+    changed = revise_policy(original, checked_at=later, access_mode="product")
+    run, changes = apply(repository, [changed], "change-access-mode", now=later)
+
+    (event,) = changes
+    assert event.kind == "changed"
+    assert event.before["access_mode"] == "unknown"
+    assert event.after["access_mode"] == "product"
+    (current,) = repository.list_resources()
+    assert current.access_mode == "product"
+    assert current.status == "active"
+
+    markdown = visible(render_briefing(run, [current], changes, []))
+    important = section(markdown, "重要变化")
+    assert "接入方式：入口未核实 → 产品内额度（非 API）" in important
+
+
+def test_briefing_labels_api_and_product_access_modes_separately(repository):
+    api = official_policy(service="Fixture API", service_key="fixture-api", access_mode="api")
+    product = official_policy(
+        service="Fixture Product",
+        service_key="fixture-product",
+        access_mode="product",
+    )
+    run, changes = apply(repository, [api, product], "dual-track-labels")
+    resources = repository.list_resources()
+    assert {resource.access_mode for resource in resources} == {"api", "product"}
+
+    markdown = visible(render_briefing(run, resources, changes, []))
+    assert "接入方式：API 可调用" in markdown
+    assert "接入方式：产品内额度（非 API）" in markdown
+    assert markdown.count("使用入口及 API 文档") == 1
+    assert "使用入口：" in markdown and "产品页面" in markdown
+    assert "产品内免费额度，非 API" in markdown

@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { ApiError } from '@/api/client'
+import { accessModeHint, accessModeLabel, accessModeOf } from '@/api/accessMode'
 import type { ReviewAction, RunRead, UserAction } from '@/api/types'
 import { useAppQuery, useRecheckMutation, useResourceQuery, useReviewMutation } from '@/api/queries'
 import { collectionLabel, hasCollectedSources, policyStatusLabel, formatBoolean, formatDate, labelFor } from '@/app/presentation'
@@ -11,6 +12,7 @@ import PolicyChip from '@/components/shared/PolicyChip.vue'
 import SafeExternalLink from '@/components/shared/SafeExternalLink.vue'
 import CollectedMessageList from '@/components/shared/CollectedMessageList.vue'
 import FactsList from '@/components/shared/FactsList.vue'
+import PolicyFacts from '@/components/shared/PolicyFacts.vue'
 import EvidenceList from '@/components/shared/EvidenceList.vue'
 import QueryError from '@/components/shared/QueryError.vue'
 import ErrorPage from '@/components/shared/ErrorPage.vue'
@@ -54,6 +56,9 @@ const verificationCheckedAt = computed(() => {
   }
   return formatDate(resource.value.last_checked_at)
 })
+const accessMode = computed(() => accessModeOf(resource.value))
+const accessModeText = computed(() => accessModeLabel(app.value, resource.value))
+const accessModeTooltip = computed(() => accessModeHint(resource.value))
 
 const isNotFound = computed(
   () => detailError.value instanceof ApiError && detailError.value.status === 404,
@@ -162,7 +167,13 @@ const recheckPending = recheckMutation.isPending
       <div class="chips">
         <StatusBadge :value="hasCollectedSources(resource) ? 'success' : 'pending'" :label="collectionLabel(resource)" />
         <span class="chip">{{ policyStatusLabel(resource.status) }}</span>
+        <span
+          class="badge access-mode-badge"
+          :class="`access-mode-badge--${accessMode}`"
+          :title="accessModeTooltip"
+        >{{ accessModeText }}</span>
       </div>
+      <p class="muted access-mode-note">{{ accessModeTooltip }}</p>
       <dl class="resource-publication">
         <div><dt>类别</dt><dd>{{ labelFor(app, resource.category) }}</dd></div>
         <div><dt>免费形式</dt><dd>{{ labelFor(app, resource.free_type) }}</dd></div>
@@ -264,6 +275,7 @@ const recheckPending = recheckMutation.isPending
         <dt>资源标识</dt>
         <dd><bdi>{{ resource.id }}</bdi></dd>
       </FactsList>
+      <PolicyFacts :policy="resource" :current-resource-id="resource.id" />
     </details>
 
 
@@ -388,6 +400,11 @@ const recheckPending = recheckMutation.isPending
 <style scoped>
 .resource-article { max-inline-size: 70rem; min-inline-size: 0; margin-inline: auto; overflow-wrap: anywhere; }
 .resource-article-meta { padding-block: 0.75rem 1.25rem; }
+.access-mode-badge { font-family: var(--font-ui); }
+.access-mode-badge--api { color: var(--color-success); border-color: var(--color-success-border); }
+.access-mode-badge--product { color: var(--color-warning); border-color: var(--color-warning-border); }
+.access-mode-badge--unknown { color: var(--color-text-secondary); }
+.access-mode-note { margin-block: 0.5rem 0; max-inline-size: 72ch; }
 .resource-publication { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 1rem 0 0; gap: 1rem; }
 .resource-publication > div { min-inline-size: 0; border-inline-start: 1px solid var(--color-border); padding-inline-start: 0.85rem; }
 .resource-publication > div:first-child { border-inline-start: 0; padding-inline-start: 0; }

@@ -68,6 +68,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Sources */
+        get: operations["list_sources_api_sources_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sources/{source_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Save Source */
+        put: operations["save_source_api_sources__source_id__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sources/{source_id}/entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Source Entries */
+        get: operations["source_entries_api_sources__source_id__entries_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sources/{source_id}/snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Source Snapshots */
+        get: operations["source_snapshots_api_sources__source_id__snapshots_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/source-snapshots/{snapshot_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Source Snapshot */
+        get: operations["source_snapshot_api_source_snapshots__snapshot_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sources/{source_id}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replay Source Rules */
+        post: operations["replay_source_rules_api_sources__source_id__replay_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/leads": {
         parameters: {
             query?: never;
@@ -512,15 +614,38 @@ export interface components {
              * @default search
              * @enum {string}
              */
-            source_type: "official" | "community" | "github" | "search";
+            source_type: "official" | "community" | "github" | "search" | "catalog";
             /**
              * Access
              * @default snippet
              * @enum {string}
              */
-            access: "page" | "snippet";
+            access: "page" | "snippet" | "feed" | "catalog";
+            /**
+             * Source Id
+             * @default
+             */
+            source_id: string;
+            /**
+             * External Id
+             * @default
+             */
+            external_id: string;
             /** Published At */
             published_at?: string | null;
+        };
+        /** ModelDeployment */
+        ModelDeployment: {
+            /** Provider */
+            provider: string;
+            /** Model Id */
+            model_id: string;
+            /** Base Model */
+            base_model: string;
+            /** Source Url */
+            source_url: string;
+            /** Quote */
+            quote: string;
         };
         /** NewsItem */
         NewsItem: {
@@ -602,6 +727,12 @@ export interface components {
              * @default
              */
             service_key: string;
+            /**
+             * Access Mode
+             * @default unknown
+             * @enum {string}
+             */
+            access_mode: "api" | "product" | "unknown";
             /** Resource Id */
             resource_id?: string | null;
             /** Aliases */
@@ -665,6 +796,12 @@ export interface components {
             china_policy: components["schemas"]["ChinaPolicy"];
             /** Evidence */
             evidence?: components["schemas"]["Evidence"][];
+            /** Quota Facts */
+            quota_facts?: components["schemas"]["QuotaFact"][];
+            /** Model Deployments */
+            model_deployments?: components["schemas"]["ModelDeployment"][];
+            /** Fact Warnings */
+            fact_warnings?: string[];
             /** @default pending */
             status: components["schemas"]["ResourceStatus"];
             /** @default success */
@@ -715,6 +852,73 @@ export interface components {
              */
             failure_reason_zh: string;
         };
+        /** QuotaFact */
+        QuotaFact: {
+            /** Amount */
+            amount?: number | null;
+            /** Unit */
+            unit: string;
+            /**
+             * Period
+             * @default 未说明
+             */
+            period: string;
+            /**
+             * Scope
+             * @default unspecified
+             */
+            scope: string;
+            /**
+             * Condition
+             * @default
+             */
+            condition: string;
+            /** Model Ids */
+            model_ids?: string[];
+            /** Source Url */
+            source_url: string;
+            /** Quote */
+            quote: string;
+            /**
+             * Value Phrase
+             * @default
+             */
+            value_phrase: string;
+        };
+        /** ResearchTrace */
+        ResearchTrace: {
+            /** Gap Id */
+            gap_id: string;
+            category: components["schemas"]["Category"];
+            /** Query */
+            query: string;
+            /** Goal */
+            goal: string;
+            /** Trigger Url */
+            trigger_url: string;
+            /** Source Ids */
+            source_ids?: string[];
+            /** Result Urls */
+            result_urls?: string[];
+            /** New Evidence Urls */
+            new_evidence_urls?: string[];
+            /**
+             * Stop Reason
+             * @default pending
+             * @enum {string}
+             */
+            stop_reason: "gap_resolved" | "no_new_evidence" | "budget_exhausted" | "provider_failed" | "duplicate_query" | "pending";
+            /**
+             * Search Calls
+             * @default 0
+             */
+            search_calls: number;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at?: string;
+        };
         /** Resource */
         Resource: {
             /** Provider */
@@ -732,6 +936,12 @@ export interface components {
              * @default
              */
             service_key: string;
+            /**
+             * Access Mode
+             * @default unknown
+             * @enum {string}
+             */
+            access_mode: "api" | "product" | "unknown";
             /** Resource Id */
             resource_id?: string | null;
             /** Aliases */
@@ -795,6 +1005,12 @@ export interface components {
             china_policy: components["schemas"]["ChinaPolicy"];
             /** Evidence */
             evidence?: components["schemas"]["Evidence"][];
+            /** Quota Facts */
+            quota_facts?: components["schemas"]["QuotaFact"][];
+            /** Model Deployments */
+            model_deployments?: components["schemas"]["ModelDeployment"][];
+            /** Fact Warnings */
+            fact_warnings?: string[];
             /** @default pending */
             status: components["schemas"]["ResourceStatus"];
             /** @default success */
@@ -933,6 +1149,17 @@ export interface components {
          * @enum {string}
          */
         ReviewState: "open" | "confirmed" | "rejected" | "ignored";
+        /** RuleMatch */
+        RuleMatch: {
+            /** Rule Id */
+            rule_id: string;
+            /** Field */
+            field: string;
+            /** Action */
+            action: string;
+            /** Label */
+            label: string;
+        };
         /** RunRead */
         RunRead: {
             /** Id */
@@ -964,6 +1191,8 @@ export interface components {
             stats: components["schemas"]["RunStats"] | null;
             /** Has Briefing */
             has_briefing: boolean;
+            /** Research Traces */
+            research_traces?: components["schemas"]["ResearchTrace"][];
         };
         /** RunStats */
         RunStats: {
@@ -1073,6 +1302,252 @@ export interface components {
              * @enum {string}
              */
             target: "model" | "search";
+        };
+        /** SourceDefinition */
+        SourceDefinition: {
+            /** Id */
+            id?: string;
+            /** Name */
+            name: string;
+            /** Url */
+            url: string;
+            /**
+             * Kind
+             * @default web
+             * @enum {string}
+             */
+            kind: "web" | "feed" | "catalog";
+            /** Categories */
+            categories?: components["schemas"]["Category"][];
+            /**
+             * Source Type
+             * @default community
+             * @enum {string}
+             */
+            source_type: "official" | "community" | "github" | "catalog";
+            /**
+             * Official Domain
+             * @default
+             */
+            official_domain: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Interval Seconds
+             * @default 86400
+             */
+            interval_seconds: number;
+            /** Include Selectors */
+            include_selectors?: string[];
+            /** Exclude Selectors */
+            exclude_selectors?: string[];
+            /** Ignore Patterns */
+            ignore_patterns?: string[];
+            /** Rules */
+            rules?: components["schemas"]["SourceRule"][];
+            /** Checked On */
+            checked_on?: string | null;
+            /**
+             * Review Reason
+             * @default
+             */
+            review_reason: string;
+            /**
+             * Reopen If
+             * @default
+             */
+            reopen_if: string;
+        };
+        /** SourceEntry */
+        SourceEntry: {
+            /** Id */
+            id?: string;
+            /** Source Id */
+            source_id: string;
+            /** External Id */
+            external_id: string;
+            /** Url */
+            url: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /**
+             * Content
+             * @default
+             */
+            content: string;
+            /** Published At */
+            published_at?: string | null;
+            /**
+             * First Seen At
+             * Format: date-time
+             */
+            first_seen_at?: string;
+            /**
+             * Last Seen At
+             * Format: date-time
+             */
+            last_seen_at?: string;
+            /**
+             * Content Hash
+             * @default
+             */
+            content_hash: string;
+            /**
+             * Revision
+             * @default 1
+             */
+            revision: number;
+            /** Rule Matches */
+            rule_matches?: components["schemas"]["RuleMatch"][];
+            /**
+             * Priority
+             * @default 0
+             */
+            priority: number;
+            /**
+             * Needs Review
+             * @default false
+             */
+            needs_review: boolean;
+            /**
+             * Raw Content
+             * @default
+             */
+            raw_content: string;
+            /**
+             * Run Id
+             * @default
+             */
+            run_id: string;
+        };
+        /** SourceRead */
+        SourceRead: {
+            definition: components["schemas"]["SourceDefinition"];
+            state?: components["schemas"]["SourceState"] | null;
+        };
+        /** SourceRule */
+        SourceRule: {
+            /** Id */
+            id?: string;
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "title" | "content" | "url";
+            /** Pattern */
+            pattern: string;
+            /**
+             * Action
+             * @default tag
+             * @enum {string}
+             */
+            action: "tag" | "deprioritize" | "review";
+            /** Label */
+            label: string;
+        };
+        /** SourceSnapshot */
+        SourceSnapshot: {
+            /** Id */
+            id?: string;
+            /** Source Id */
+            source_id: string;
+            /** Url */
+            url: string;
+            /**
+             * Fetched At
+             * Format: date-time
+             */
+            fetched_at?: string;
+            /** Raw Content */
+            raw_content: string;
+            /**
+             * Content Type
+             * @default
+             */
+            content_type: string;
+            /** Text */
+            text: string;
+            /** Links */
+            links?: string[];
+            /** Raw Hash */
+            raw_hash: string;
+            /** Normalized Hash */
+            normalized_hash: string;
+            /** Config Hash */
+            config_hash: string;
+            /** Previous Id */
+            previous_id?: string | null;
+            /**
+             * Text Diff
+             * @default
+             */
+            text_diff: string;
+            /** Added Links */
+            added_links?: string[];
+            /** Removed Links */
+            removed_links?: string[];
+            /**
+             * Run Id
+             * @default
+             */
+            run_id: string;
+        };
+        /** SourceState */
+        SourceState: {
+            /** Source Id */
+            source_id: string;
+            /** Last Checked At */
+            last_checked_at?: string | null;
+            /** Last Success At */
+            last_success_at?: string | null;
+            /**
+             * Status
+             * @default never
+             * @enum {string}
+             */
+            status: "never" | "ok" | "error";
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /**
+             * Etag
+             * @default
+             */
+            etag: string;
+            /**
+             * Last Modified
+             * @default
+             */
+            last_modified: string;
+            /** Last Snapshot Id */
+            last_snapshot_id?: string | null;
+            /**
+             * Config Hash
+             * @default
+             */
+            config_hash: string;
+            /**
+             * Entry Count
+             * @default 0
+             */
+            entry_count: number;
+            /** Window Oldest */
+            window_oldest?: string | null;
+            /**
+             * Coverage Warning
+             * @default
+             */
+            coverage_warning: string;
+            /** Next Check At */
+            next_check_at?: string | null;
         };
         /** TaskDetailRead */
         TaskDetailRead: {
@@ -1309,6 +1784,253 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    list_sources_api_sources_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceRead"][];
+                };
+            };
+        };
+    };
+    save_source_api_sources__source_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceDefinition"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceRead"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    source_entries_api_sources__source_id__entries_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceEntry"][];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    source_snapshots_api_sources__source_id__snapshots_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceSnapshot"][];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    source_snapshot_api_source_snapshots__snapshot_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                snapshot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceSnapshot"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replay_source_rules_api_sources__source_id__replay_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceEntry"][];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

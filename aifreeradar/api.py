@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import cast
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from filelock import FileLock, Timeout
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from .api_models import (
@@ -28,10 +30,12 @@ from .api_models import (
     SettingsResetRequest,
     SettingsTestRead,
     SettingsTestRequest,
+    SourceRead,
     TaskDetailRead,
 )
 from .config import ConfigurationError, Settings
 from .models import (
+    ACCESS_MODE_LABELS,
     CATEGORY_LABELS,
     CHECK_STATUS_LABELS,
     CHINA_POLICY_LABELS,
@@ -48,6 +52,9 @@ from .models import (
     ReviewState,
     Run,
     Scope,
+    SourceDefinition,
+    SourceEntry,
+    SourceSnapshot,
 )
 from .probes import SettingsProbeError, probe_model, probe_search
 from .service import BusyError
@@ -57,6 +64,7 @@ from .settings_store import (
     SettingsStore,
     SettingsWriteError,
 )
+from .sources import SourcePipeline, configured_sources
 from .storage import UnknownResource
 from .web_content import redact_json, redact_text, render_markdown
 
@@ -76,6 +84,7 @@ LABELS = {
     **CHINA_POLICY_LABELS,
     **RUN_STATUS_LABELS,
     **TRIGGER_LABELS,
+    **ACCESS_MODE_LABELS,
     "global": "全球资源",
     "china": "中国大陆相关消息（可用性以来源为准）",
     "official": "官方来源",
@@ -92,6 +101,13 @@ TASK_NOT_FOUND = "未找到这项任务。请返回任务历史选择已有任�
 RESOURCE_NOT_FOUND = "未找到此资源。请返回资源库选择已有资源。"
 IGNORED_RECHECK = "该资源已标记忽略，请先恢复处理后再重查。"
 BUSY_MESSAGE = "已有研究任务运行中，当前无法发起另一项任务。查看运行中的任务，完成后再试。"
+SOURCE_NOT_FOUND = "未找到此来源。请返回来源管理选择已有来源。"
+SOURCE_SNAPSHOT_NOT_FOUND = "未找到此网页版本。请返回来源管理查看已有版本。"
+SOURCE_ID_MISMATCH = "来源标识与地址不一致，请刷新页面后重试。"
+SOURCE_WRITE_BUSY = "已有研究任务运行中，来源暂不可写入。完成后再试。"
+SOURCE_PROCESS_BUSY = "另一进程正在研究，来源暂不可写入。请稍后重试。"
+SOURCE_PAGING = "来源条目分页参数无效，请检查后重试。"
+SOURCE_INVALID_INPUT = "来源定义无效：请检查公开地址、CSS 选择器、正则表达式、规则标签与类别后重试。"
 SETTINGS_CONFLICT = "配置已被其他页面修改，请刷新后重试。"
 SETTINGS_SECRET_UNAVAILABLE = "服务端未配置 AIFREERADAR_SECRET_KEY，无法保存密钥。"
 SETTINGS_PROBE_FAILED = "设置探测失败，请检查配置后重试。"
@@ -130,7 +146,47 @@ def run_read(run: Run, data_dir: Path) -> RunRead:
         schedule_day=run.schedule_day,
         stats=run.stats,
         has_briefing=has_briefing,
+        research_traces=run.research_traces,
     )
+
+
+def source_definitions(request: Request) -> list[SourceDefinition]:
+    """Effective sources: stored overrides layered over configured definitions."""
+    settings = request.app.state.settings
+    return request.app.state.repository.list_source_definitions(configured_sources(settings))
+
+
+def known_source(request: Request, source_id: str) -> SourceDefinition:
+    for definition in source_definitions(request):
+        if definition.id == source_id:
+            return definition
+    raise HTTPException(status_code=404, detail=SOURCE_NOT_FOUND)
+
+
+def source_read(request: Request, definition: SourceDefinition) -> SourceRead:
+    state = request.app.state.repository.get_source_state(definition.id)
+    return SourceRead(definition=definition, state=state)
+
+
+@contextmanager
+def source_write_lock(request: Request) -> Iterator[None]:
+    """Serialise source writes with research, in-process and across processes."""
+    manager = request.app.state.manager
+    if manager.active is not None:
+        raise HTTPException(status_code=409, detail=SOURCE_WRITE_BUSY)
+    data_dir = Path(request.app.state.settings.data_dir).resolve()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(data_dir / "research.lock")
+    try:
+        lock.acquire(timeout=0)
+    except Timeout as exc:
+        raise HTTPException(status_code=409, detail=SOURCE_PROCESS_BUSY) from exc
+    try:
+        if manager.active is not None:
+            raise HTTPException(status_code=409, detail=SOURCE_WRITE_BUSY)
+        yield
+    finally:
+        lock.release()
 
 
 def json_response(
@@ -305,6 +361,92 @@ async def test_settings(request: Request, body: SettingsTestRequest):
     except Exception:  # noqa: BLE001 - probe transport failures must not leak details
         raise HTTPException(status_code=502, detail=SETTINGS_PROBE_FAILED) from None
     return json_response(SettingsTestRead(ok=True, detail=detail), settings)
+
+
+@router.get("/sources", response_model=list[SourceRead])
+async def list_sources(request: Request):
+    settings = request.app.state.settings
+    return json_response(
+        [source_read(request, definition) for definition in source_definitions(request)],
+        settings,
+    )
+
+
+@router.put(
+    "/sources/{source_id}",
+    response_model=SourceRead,
+    responses={
+        404: {"model": ApiError},
+        409: {"model": ApiError},
+        422: {"model": ApiError},
+    },
+)
+async def save_source(request: Request, source_id: str, body: SourceDefinition):
+    if body.id != source_id:
+        raise HTTPException(status_code=422, detail=SOURCE_ID_MISMATCH)
+    known_source(request, source_id)
+    with source_write_lock(request):
+        saved = request.app.state.repository.save_source_definition(body)
+    return json_response(source_read(request, saved), request.app.state.settings)
+
+
+@router.get(
+    "/sources/{source_id}/entries",
+    response_model=list[SourceEntry],
+    responses={404: {"model": ApiError}, 422: {"model": ApiError}},
+)
+async def source_entries(request: Request, source_id: str, limit: int = 100, offset: int = 0):
+    if limit < 1 or limit > 500 or offset < 0:
+        raise HTTPException(status_code=422, detail=SOURCE_PAGING)
+    known_source(request, source_id)
+    entries = request.app.state.repository.list_source_entries(
+        source_id, limit=limit, offset=offset
+    )
+    return json_response(entries, request.app.state.settings)
+
+
+@router.get(
+    "/sources/{source_id}/snapshots",
+    response_model=list[SourceSnapshot],
+    responses={404: {"model": ApiError}, 422: {"model": ApiError}},
+)
+async def source_snapshots(request: Request, source_id: str, limit: int = 20):
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=422, detail=SOURCE_PAGING)
+    known_source(request, source_id)
+    snapshots = request.app.state.repository.list_source_snapshots(source_id, limit=limit)
+    return json_response(snapshots, request.app.state.settings)
+
+
+@router.get(
+    "/source-snapshots/{snapshot_id}",
+    response_model=SourceSnapshot,
+    responses={404: {"model": ApiError}},
+)
+async def source_snapshot(request: Request, snapshot_id: str):
+    snapshot = request.app.state.repository.get_source_snapshot(snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail=SOURCE_SNAPSHOT_NOT_FOUND)
+    return json_response(snapshot, request.app.state.settings)
+
+
+@router.post(
+    "/sources/{source_id}/replay",
+    response_model=list[SourceEntry],
+    responses={
+        404: {"model": ApiError},
+        409: {"model": ApiError},
+    },
+)
+async def replay_source_rules(request: Request, source_id: str):
+    known_source(request, source_id)
+    settings = request.app.state.settings
+    with source_write_lock(request):
+        try:
+            entries = SourcePipeline(settings, request.app.state.repository).replay_rules(source_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=SOURCE_NOT_FOUND) from exc
+    return json_response(entries, settings)
 
 
 @router.get("/leads", response_model=list[LeadRead])

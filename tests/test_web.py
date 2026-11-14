@@ -1262,6 +1262,7 @@ def test_same_origin_translation_backfill_returns_202_and_persists_zh(settings, 
             "schedule_day",
             "stats",
             "has_briefing",
+            "research_traces",
         }
         assert body["trigger"] == "manual"
         assert body["status"] == "running"

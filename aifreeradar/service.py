@@ -179,6 +179,7 @@ class TaskManager:
                     self._record_unfinished(run, expected, failures)
             except Exception as exc:  # noqa: BLE001
                 failures.append(self._redact(f"读取历史记录失败：{type(exc).__name__}：{exc}"))
+            self._attach_traces(run)
             self._finish(run, existing, failures)
         finally:
             self._release_writer()
@@ -208,17 +209,33 @@ class TaskManager:
         value = re.sub(r"(?i)(https?://)[^\s/@]+:[^\s/@]+@", r"\1[已隐藏凭据]@", value)
         return value
 
-    def _redact_message(self, message: CollectedMessage) -> CollectedMessage:
-        def redact_value(value: object) -> object:
-            if isinstance(value, str):
-                return self._redact(value)
-            if isinstance(value, list):
-                return [redact_value(item) for item in value]
-            if isinstance(value, dict):
-                return {key: redact_value(item) for key, item in value.items()}
-            return value
+    def _redact_value(self, value: object) -> object:
+        if isinstance(value, str):
+            return self._redact(value)
+        if isinstance(value, list):
+            return [self._redact_value(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self._redact_value(item) for key, item in value.items()}
+        return value
 
-        return CollectedMessage.model_validate(redact_value(message.model_dump()))
+    def _redact_message(self, message: CollectedMessage) -> CollectedMessage:
+        return CollectedMessage.model_validate(self._redact_value(message.model_dump()))
+
+    def _attach_traces(self, run: Run) -> None:
+        """Copy and redact the run's gap ledger, including failed or cancelled segments."""
+        researcher = self._researcher
+        traces = getattr(researcher, "last_research_traces", None) if researcher is not None else None
+        if not isinstance(traces, list):
+            return
+        run.research_traces = [
+            type(trace).model_validate(self._redact_value(trace.model_dump()))
+            for trace in traces
+        ]
+
+    def _attach_run_id(self, run: Run) -> None:
+        setter = getattr(self._researcher, "set_run_id", None) if self._researcher else None
+        if callable(setter):
+            setter(run.id)
 
     def _incomplete(self, resource: Resource, reason: str) -> Policy:
         values = resource.model_dump(include=set(Policy.model_fields))
@@ -263,6 +280,7 @@ class TaskManager:
                 from .research import HarnessResearcher
 
                 self._researcher = HarnessResearcher(self._settings_snapshot())
+            self._attach_run_id(run)
             researched = await self._researcher.research(
                 run.scope.model_copy(deep=True), existing
             )
@@ -273,6 +291,7 @@ class TaskManager:
                 failures.append(self._redact(f"保存发现来源失败：{type(exc).__name__}：{exc}"))
             batch = ResearchBatch.model_validate(researched)
             self._attach_stats(run)
+            self._attach_traces(run)
             batch.failures = [self._redact(reason) for reason in batch.failures]
             batch.notes = [self._redact(note) for note in batch.notes]
             for policy in batch.resources:
@@ -318,11 +337,13 @@ class TaskManager:
             run.status = "failed"
             failures.append("应用关闭或任务被取消，本次研究未完成；保留上次已确认结论")
             self._attach_stats(run)
+            self._attach_traces(run)
             self._record_unfinished(run, expected, failures)
         except Exception as exc:  # noqa: BLE001
             run.status = "failed"
             failures.append(self._redact(f"{type(exc).__name__}：{exc}"))
             self._attach_stats(run)
+            self._attach_traces(run)
             self._record_unfinished(run, expected, failures)
         finally:
             try:
@@ -446,10 +467,12 @@ class TaskManager:
                     from .research import HarnessResearcher
 
                     self._researcher = HarnessResearcher(self._settings_snapshot())
+                self._attach_run_id(run)
                 searched = True
                 result = await cast(SourceResearcher, self._researcher).collect_sources(targets)
                 batch = ResearchBatch.model_validate(result)
                 self._attach_stats(run)
+                self._attach_traces(run)
                 run.notes.extend(self._redact(note) for note in batch.notes)
                 failures.extend(self._redact(reason) for reason in batch.failures)
                 target_ids = {resource.id for resource in targets}
@@ -475,6 +498,7 @@ class TaskManager:
             try:
                 if searched:
                     self._attach_stats(run)
+                    self._attach_traces(run)
                 remaining = len(self._source_targets())
                 run.notes.append(
                     f"来源回填：本地恢复 {recovered} 条，补搜恢复 {imported} 条；"

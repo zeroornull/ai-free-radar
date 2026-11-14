@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from filelock import FileLock, Timeout
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .api import APP_VERSION, INVALID_INPUT, error_response, router
+from .api import APP_VERSION, INVALID_INPUT, SOURCE_INVALID_INPUT, error_response, router
 from .config import ConfigurationError, Settings, load_config_document
 from .scheduler import Scheduler
 from .service import TaskManager
@@ -28,8 +28,8 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 APP_DIR = PACKAGE_DIR / "static" / "app"
 APP_INDEX = APP_DIR / "index.html"
 NOT_BUILT_MESSAGE = "前端尚未构建，请先运行 pnpm --dir frontend build。"
-PAGE_PATHS = frozenset({"/resources", "/tasks", "/briefings", "/leads"})
-PAGE_PREFIXES = ("/resources/", "/tasks/", "/briefings/", "/leads/")
+PAGE_PATHS = frozenset({"/resources", "/tasks", "/briefings", "/leads", "/sources", "/settings"})
+PAGE_PREFIXES = ("/resources/", "/tasks/", "/briefings/", "/leads/", "/sources/")
 RESERVED_PREFIXES = ("/api", "/assets", "/static", "/health", "/docs", "/redoc", "/openapi.json")
 CONTENT_SECURITY_POLICY = (
     "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self'; "
@@ -75,6 +75,12 @@ def _is_reserved(path: str) -> bool:
 
 def _is_api(path: str) -> bool:
     return path == "/api" or path.startswith("/api/")
+
+
+def _is_source_request(path: str) -> bool:
+    return path == "/api/sources" or path.startswith(
+        ("/api/sources/", "/api/source-snapshots/")
+    )
 
 
 def create_app(
@@ -221,7 +227,8 @@ def create_app(
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request: Request, exc: RequestValidationError):
         if _is_api(request.url.path):
-            return error_response(settings, INVALID_INPUT, 422)
+            detail = SOURCE_INVALID_INPUT if _is_source_request(request.url.path) else INVALID_INPUT
+            return error_response(settings, detail, 422)
         return Response(INVALID_INPUT, status_code=422, media_type="text/plain; charset=utf-8")
 
     @app.get("/health")

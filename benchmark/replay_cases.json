@@ -1,0 +1,387 @@
+{
+  "schema_version": 1,
+  "description": "AIFreeRadar 冻结回放评测夹具。全部名称、URL、额度与页面摘录均为隔离的合成评测数据，不是生产种子资源，也不代表任何真实服务的可用性。回放不触网、不调用模型、不改写数据库。",
+  "cases": [
+    {
+      "id": "alias-credit-wording",
+      "description": "观察内容使用别名与“free credits/试用”措辞，补充读取的定价页以不同措辞给出量化免费额度；目标必须有页面原文支撑。",
+      "category": "text",
+      "observations": [
+        {
+          "url": "https://community.example.org/kinetic-note",
+          "title": "Kinetic Labs, formerly Kinetic AI, offers free credits",
+          "snippet": "Text API trial credits are available this month.",
+          "source_id": "fixture-community",
+          "access": "snippet"
+        }
+      ],
+      "provider_outcomes": [
+        {
+          "trigger_url": "https://community.example.org/kinetic-note",
+          "source_id": "fixture-community",
+          "status": "ok",
+          "results": [
+            {
+              "url": "https://kinetic.example/pricing",
+              "title": "Kinetic text API pricing",
+              "snippet": "Free tier details for the text API.",
+              "access": "snippet"
+            }
+          ],
+          "pages": [
+            {
+              "url": "https://kinetic.example/pricing",
+              "text": "Free tier includes 1,000 requests per month for new accounts. Kinetic text API offers kinetic-1 on base-model-x.",
+              "access": "page"
+            }
+          ]
+        }
+      ],
+      "expected_targets": [
+        {
+          "id": "kinetic-free-tier",
+          "urls": ["https://kinetic.example/pricing"],
+          "evidence_phrases": ["1,000 requests per month"]
+        }
+      ],
+      "expected_gaps": [
+        {
+          "trigger_url": "https://community.example.org/kinetic-note",
+          "target_ids": ["kinetic-free-tier"]
+        }
+      ],
+      "field_claims": [
+        {
+          "kind": "quota_fact",
+          "payload": {
+            "amount": 1000,
+            "unit": "requests",
+            "period": "month",
+            "scope": "new accounts",
+            "condition": "new accounts",
+            "model_ids": [],
+            "source_url": "https://kinetic.example/pricing",
+            "quote": "Free tier includes 1,000 requests per month for new accounts.",
+            "value_phrase": "1,000 requests per month"
+          },
+          "expect": "accepted"
+        },
+        {
+          "kind": "model_deployment",
+          "payload": {
+            "provider": "Kinetic",
+            "model_id": "kinetic-1",
+            "base_model": "base-model-x",
+            "source_url": "https://kinetic.example/pricing",
+            "quote": "Kinetic text API offers kinetic-1 on base-model-x."
+          },
+          "expect": "accepted"
+        }
+      ],
+      "expectations": {
+        "planned_gap_count": 1,
+        "stop_reasons": ["gap_resolved"],
+        "baseline_targets": 0,
+        "final_targets": 1,
+        "added_targets": 1,
+        "additional_requests": 2,
+        "requests_per_added_target": 2.0,
+        "duplicate_queries": 0,
+        "budget_violations": 0,
+        "false_resolved_gaps": 0,
+        "field_evidence_support": 1.0
+      }
+    },
+    {
+      "id": "repeated-source-dedup",
+      "description": "同一来源的重复转发与改写措辞只计划一次补搜；返回列表长度与重复条目都不增加目标召回。",
+      "category": "text",
+      "observations": [
+        {
+          "url": "https://community.example.net/free-credits-1",
+          "title": "Foo API free credits",
+          "snippet": "Foo API free credits now available.",
+          "source_id": "fixture-feed",
+          "external_id": "post-1",
+          "revision": 1,
+          "access": "feed"
+        },
+        {
+          "url": "https://community.example.net/free-credits-2",
+          "title": "Foo API free credits, more detail",
+          "snippet": "Foo API free credits now available for new accounts.",
+          "source_id": "fixture-feed",
+          "external_id": "post-2",
+          "revision": 1,
+          "access": "feed"
+        }
+      ],
+      "provider_outcomes": [
+        {
+          "trigger_url": "https://community.example.net/free-credits-1",
+          "source_id": "fixture-feed",
+          "status": "ok",
+          "results": [],
+          "pages": []
+        }
+      ],
+      "expected_targets": [
+        {
+          "id": "foo-free-credits",
+          "urls": ["https://community.example.net/free-credits-1"],
+          "evidence_phrases": ["free credits now available"]
+        }
+      ],
+      "expected_gaps": [
+        {
+          "trigger_url": "https://community.example.net/free-credits-1",
+          "target_ids": ["foo-free-credits"]
+        }
+      ],
+      "expectations": {
+        "planned_gap_count": 1,
+        "stop_reasons": ["no_new_evidence"],
+        "baseline_targets": 1,
+        "final_targets": 1,
+        "added_targets": 0,
+        "requests_per_added_target": null,
+        "duplicate_queries": 0,
+        "duplicate_query_rate": 0.0,
+        "false_resolved_gaps": 0
+      }
+    },
+    {
+      "id": "budget-exhausted",
+      "description": "基线搜索已用满本段预算，补搜不得越界或伪装成已完成；没有新增目标时应如实报告预算耗尽。",
+      "category": "image",
+      "observations": [
+        {
+          "url": "https://pixel.example.org/free-tier",
+          "title": "Pixel image API free tier",
+          "snippet": "Free tier is available for image generation.",
+          "access": "snippet"
+        },
+        {
+          "url": "https://render.example.net/free-trial",
+          "title": "Render image API trial",
+          "snippet": "Free trial for image rendering API.",
+          "access": "snippet"
+        }
+      ],
+      "budgets": {
+        "search_limit": 6,
+        "fetch_limit": 32,
+        "baseline_search_calls": 6,
+        "baseline_fetch_calls": 0,
+        "gap_limit": 2
+      },
+      "expected_targets": [
+        {
+          "id": "pixel-free-tier",
+          "urls": ["https://pixel.example.org/pricing"],
+          "evidence_phrases": ["free tier"]
+        },
+        {
+          "id": "render-free-trial",
+          "urls": ["https://render.example.net/pricing"],
+          "evidence_phrases": ["free trial"]
+        }
+      ],
+      "expected_gaps": [
+        {
+          "trigger_url": "https://pixel.example.org/free-tier",
+          "target_ids": ["pixel-free-tier"]
+        },
+        {
+          "trigger_url": "https://render.example.net/free-trial",
+          "target_ids": ["render-free-trial"]
+        }
+      ],
+      "expectations": {
+        "planned_gap_count": 2,
+        "stop_reasons": ["budget_exhausted", "budget_exhausted"],
+        "additional_requests": 0,
+        "added_targets": 0,
+        "requests_per_added_target": null,
+        "budget_violations": 0,
+        "duplicate_queries": 0,
+        "false_resolved_gaps": 0
+      }
+    },
+    {
+      "id": "provider-failed",
+      "description": "搜索服务失败时明确记录 provider_failed，不得把新 URL 或空结果当作缺口已解决。",
+      "category": "speech",
+      "observations": [
+        {
+          "url": "https://voice.example.org/free-credits",
+          "title": "Voice API free credits",
+          "snippet": "Speech API free credits announced.",
+          "access": "snippet"
+        }
+      ],
+      "provider_outcomes": [
+        {
+          "trigger_url": "https://voice.example.org/free-credits",
+          "status": "failed",
+          "error": "fixture provider returned HTTP 429",
+          "results": [],
+          "pages": []
+        }
+      ],
+      "expected_targets": [
+        {
+          "id": "voice-free-credits",
+          "urls": ["https://voice.example.org/pricing"],
+          "evidence_phrases": ["free credits"]
+        }
+      ],
+      "expected_gaps": [
+        {
+          "trigger_url": "https://voice.example.org/free-credits",
+          "target_ids": ["voice-free-credits"]
+        }
+      ],
+      "expectations": {
+        "planned_gap_count": 1,
+        "stop_reasons": ["provider_failed"],
+        "baseline_targets": 0,
+        "added_targets": 0,
+        "requests_per_added_target": null,
+        "budget_violations": 0,
+        "duplicate_queries": 0,
+        "false_resolved_gaps": 0
+      }
+    },
+    {
+      "id": "catalog-zero-price",
+      "description": "catalog 记录显示 $0.00 价格也不足以证明免费额度；该记录不能算公告召回，也不能作为额度事实来源。未知额度保持未知。",
+      "category": "embedding",
+      "observations": [
+        {
+          "url": "https://models.example.org/v1/models/foo-embed",
+          "title": "Foo Embed pricing",
+          "snippet": "Input $0.00 per 1M tokens; output $0.00 per 1M tokens.",
+          "source_id": "fixture-catalog",
+          "external_id": "foo-embed",
+          "access": "catalog"
+        },
+        {
+          "url": "https://docs.example.com/foo-embed",
+          "title": "Foo Embed API docs",
+          "snippet": "API documentation.",
+          "text": "Free tier includes requests for standard usage.",
+          "source_id": "fixture-docs",
+          "access": "page"
+        }
+      ],
+      "expected_targets": [
+        {
+          "id": "foo-embed-free",
+          "urls": ["https://models.example.org/v1/models/foo-embed"],
+          "evidence_phrases": ["Input $0.00 per 1M tokens"]
+        }
+      ],
+      "field_claims": [
+        {
+          "kind": "quota_fact",
+          "payload": {
+            "amount": null,
+            "unit": "requests",
+            "period": "未说明",
+            "scope": "unspecified",
+            "condition": "",
+            "model_ids": [],
+            "source_url": "https://docs.example.com/foo-embed",
+            "quote": "Free tier includes requests for standard usage.",
+            "value_phrase": ""
+          },
+          "expect": "accepted"
+        },
+        {
+          "kind": "quota_fact",
+          "payload": {
+            "amount": 0.0,
+            "unit": "$",
+            "period": "未说明",
+            "scope": "unspecified",
+            "condition": "",
+            "model_ids": [],
+            "source_url": "https://models.example.org/v1/models/foo-embed",
+            "quote": "Input $0.00 per 1M tokens",
+            "value_phrase": ""
+          },
+          "expect": "rejected"
+        }
+      ],
+      "required_unknowns": ["amount", "period"],
+      "expectations": {
+        "planned_gap_count": 0,
+        "baseline_targets": 0,
+        "final_targets": 0,
+        "added_targets": 0,
+        "requests_per_added_target": null,
+        "field_evidence_support": 0.5,
+        "false_fact_acceptance": 0,
+        "unknown_preservation_violations": 0
+      }
+    },
+    {
+      "id": "same-guid-revision",
+      "description": "同一 external_id 的后续 revision 提供更完整原文；冻结输入保留两版，但 planner 不因同一来源重复计划补搜。",
+      "category": "rerank",
+      "observations": [
+        {
+          "url": "https://feed.example.org/foo-rank",
+          "title": "Foo rank free tier",
+          "snippet": "Foo Rerank API announces a free tier.",
+          "source_id": "fixture-feed",
+          "external_id": "post-42",
+          "revision": 1,
+          "access": "feed"
+        },
+        {
+          "url": "https://feed.example.org/foo-rank",
+          "title": "Foo rank free tier",
+          "snippet": "Foo Rerank API announces a free tier with 500 requests per month.",
+          "source_id": "fixture-feed",
+          "external_id": "post-42",
+          "revision": 2,
+          "access": "feed"
+        }
+      ],
+      "provider_outcomes": [
+        {
+          "trigger_url": "https://feed.example.org/foo-rank",
+          "source_id": "fixture-feed",
+          "status": "ok",
+          "results": [],
+          "pages": []
+        }
+      ],
+      "expected_targets": [
+        {
+          "id": "foo-rank-free-tier",
+          "urls": ["https://feed.example.org/foo-rank"],
+          "evidence_phrases": ["500 requests per month"]
+        }
+      ],
+      "expected_gaps": [
+        {
+          "trigger_url": "https://feed.example.org/foo-rank",
+          "target_ids": ["foo-rank-free-tier"]
+        }
+      ],
+      "expectations": {
+        "planned_gap_count": 1,
+        "stop_reasons": ["no_new_evidence"],
+        "baseline_targets": 1,
+        "final_targets": 1,
+        "added_targets": 0,
+        "requests_per_added_target": null,
+        "duplicate_queries": 0,
+        "false_resolved_gaps": 0
+      }
+    }
+  ]
+}

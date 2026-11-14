@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -24,8 +25,10 @@ from .models import (
     FreeType,
     LeadDiscovery,
     MessageSource,
+    ModelDeployment,
     NewsItem,
     Policy,
+    QuotaFact,
     ResearchBatch,
     Resource,
     ResourceReview,
@@ -33,6 +36,10 @@ from .models import (
     ReviewAction,
     ReviewState,
     Run,
+    SourceDefinition,
+    SourceEntry,
+    SourceSnapshot,
+    SourceState,
     UserAction,
     aware_utc,
     eligible_recommendation,
@@ -42,6 +49,7 @@ from .models import (
 
 # These are facts, rather than presentation, identity labels, or observation times.
 IMPORTANT_FIELDS = (
+    "access_mode",
     "category",
     "models",
     "free_type",
@@ -166,7 +174,10 @@ def validate_policy(policy: Policy, now: datetime) -> Policy:
         "payment_required",
         "payment_method_required",
     }
-    if not ({"api_url", "docs_url"} & official_fields) or not any(
+    if result.access_mode == "product":
+        if not official_fields:
+            problems.append("缺少产品页面官方依据")
+    elif not ({"api_url", "docs_url"} & official_fields) or not any(
         _known(value) and _valid_http(value) for value in [result.api_url, result.docs_url]
     ):
         problems.append("缺少可接入 API 的官方入口或文档依据")
@@ -222,14 +233,20 @@ def _valid_http(value: str) -> bool:
 
 
 _FREE = re.compile(
-    r"\bfree\b|\bno charge\b|\bno cost\b|免费|赠送|赠额|零费用|零支付", re.IGNORECASE
+    r"\bfree\b|\bno charge\b|\bno cost\b|免费|赠送|赠额|零费用|零支付"
+    r"|\b(?:welcome|sign[ -]?up|monthly|bonus|complimentary|trial)\s+credits?\b"
+    r"|免费积分|免费额度|免费试用|免费体验",
+    re.IGNORECASE,
 )
 _API = re.compile(r"\bapi\b|\bsdk\b|接口", re.IGNORECASE)
 _PAID = re.compile(
     r"(?:must|required?\s+to|need\s+to)\s+(?:pay|purchase|buy|top[ -]?up|recharge)"
     r"|(?:payment|purchase|top[ -]?up|recharge)\s+(?:is\s+)?required"
     r"|(?:需|须|先|要求|必须)(?:要|先|进行)?(?:付费|付款|支付|购买|充值)"
-    r"|(?:付费|付款|充值)(?:才|后|前提).{0,6}?(?:能|可|才|使用|调用|获得)",
+    r"|(?:付费|付款|充值)(?:才|后|前提).{0,6}?(?:能|可|才|使用|调用|获得)"
+    r"|(?:requires?|required?\s+to\s+(?:pay|place))\s+(?:a\s+)?(?:deposit|prepayment)"
+    r"|(?:deposit|prepayment)\s+(?:is\s+)?required"
+    r"|(?:需|须|要求|必须)(?:先|要|缴纳|支付)?(?:押金|保证金|预存|预充值)",
     re.IGNORECASE,
 )
 _WEB_ONLY = re.compile(
@@ -248,6 +265,7 @@ _REOPENED = re.compile(
     re.IGNORECASE,
 )
 MESSAGE_FACT_FIELDS = (
+    "access_mode",
     "free_type", "quota", "quota_unit", "refresh_cycle", "rate_limit",
     "claim_conditions", "payment_required", "payment_method_required",
     "expires_at", "expiry_notes", "region_restrictions", "china_policy", "models",
@@ -265,8 +283,10 @@ POLICY_ZH_FIELDS = tuple(name for name in Policy.model_fields if name.endswith("
 def _strip_negations(text: str) -> str:
     """Remove no-payment phrasing and card-binding requirements before paid checks."""
     return re.sub(
-        r"\b(?:no|without)\s+(?:payment|purchase|top[ -]?up|recharge)(?:\s+required)?"
-        r"|(?:无需|不需要|不必|不用)(?:付费|付款|支付|购买|充值|绑定(?:银行卡|信用卡|支付方式))"
+        r"\b(?:no|without)\s+(?:payment|purchase|top[ -]?up|recharge|deposit|prepayment)"
+        r"(?:\s+required)?"
+        r"|(?:无需|不需要|不必|不用)(?:付费|付款|支付|购买|充值|押金|保证金|预存|预充值"
+        r"|绑定(?:银行卡|信用卡|支付方式))"
         r"|(?:do(?:es)?\s+not|don't|doesn't)\s+(?:need\s+to|require)\s+"
         r"(?:pay|payment|purchase|top[ -]?up|recharge)"
         r"|(?:valid\s+)?payment\s+method\s+(?:is\s+)?required"
@@ -278,26 +298,41 @@ def _strip_negations(text: str) -> str:
 
 
 def message_problem(message: CollectedMessage) -> str:
-    """Collection boundary: explicit free API support, unknown terms allowed,
-    card binding allowed, actual purchase excluded."""
+    """Collection boundary for two separate, explicitly labeled access tracks.
+
+    API track (``access_mode`` ``api`` or legacy ``unknown``): the source must
+    state a free API/SDK opportunity, and web-only wording still disqualifies it.
+    Product track (``product``): the source must state a free in-product credit,
+    trial, or quota; a web/desktop/agent entry is expected, so API evidence is
+    not required and web-only wording is not a rejection reason. In both tracks
+    a stated purchase, top-up, or deposit still disqualifies the message.
+    """
     policy = message.policy
     source_texts = [f"{item.title}\n{item.excerpt}" for item in message.sources]
     excerpts = "\n".join(item.excerpt for item in message.sources)
     text = "\n".join(source_texts)
     free_ok = any(_FREE.search(source) for source in source_texts)
-    api_ok = (
-        any(_API.search(source) for source in source_texts)
-        or bool(_API.search(policy.service))
-        or _valid_http(policy.api_url)
-        or _valid_http(policy.docs_url)
-    )
-    if not (free_ok and api_ok):
-        return "来源未明确说明免费 API 机会"
+    product = policy.access_mode == "product"
+    if not free_ok:
+        return "来源未明确说明免费机会" if product else "来源未明确说明免费 API 机会"
+    if not product:
+        api_ok = (
+            any(_API.search(source) for source in source_texts)
+            or bool(_API.search(policy.service))
+            or _valid_http(policy.api_url)
+            or _valid_http(policy.docs_url)
+        )
+        if not api_ok:
+            return "来源未明确说明免费 API 机会"
     if policy.payment_required is True:
         return "来源说明需实际付款、购买或充值，非免费机会"
     if _PAID.search(_strip_negations(text)):
         return "来源说明需实际付款、购买或充值，非免费机会"
-    if _WEB_ONLY.search(excerpts) or _NOT_FREE.search(excerpts):
+    if _NOT_FREE.search(excerpts):
+        if product:
+            return "来源说明已不免费或需付费，非免费产品额度"
+        return "来源仅提供网页工具或需付费，未提供免费 API"
+    if not product and _WEB_ONLY.search(excerpts):
         return "来源仅提供网页工具或需付费，未提供免费 API"
     return ""
 
@@ -333,11 +368,25 @@ def _sourced_expiry(message: CollectedMessage) -> bool:
 def _merge_sources(left: list[MessageSource], right: list[MessageSource]) -> list[MessageSource]:
     merged = list(left)
     keys = {
-        (item.url, item.source_type, item.access, " ".join(item.excerpt.split()))
+        (
+            item.url,
+            item.source_type,
+            item.access,
+            item.source_id,
+            item.external_id,
+            " ".join(item.excerpt.split()),
+        )
         for item in merged
     }
     for item in right:
-        key = (item.url, item.source_type, item.access, " ".join(item.excerpt.split()))
+        key = (
+            item.url,
+            item.source_type,
+            item.access,
+            item.source_id,
+            item.external_id,
+            " ".join(item.excerpt.split()),
+        )
         if key not in keys:
             merged.append(item)
             keys.add(key)
@@ -348,9 +397,19 @@ def _merge_report(previous: CollectedMessage, incoming: CollectedMessage) -> Col
     """Fill unknown incoming values with previously reported known details."""
     values = incoming.policy.model_dump()
     for field, old in previous.policy.model_dump().items():
+        if field in {"quota_facts", "model_deployments", "fact_warnings"}:
+            continue
         value = values[field]
         if value is None or value == [] or (isinstance(value, str) and not _known(value)):
             values[field] = old
+    # Structured facts are explicit evidence. An absent optional fact means
+    # "not observed this time", never that a previously known fact disappeared.
+    if not values["quota_facts"]:
+        values["quota_facts"] = [fact.model_dump() for fact in previous.policy.quota_facts]
+    if not values["model_deployments"]:
+        values["model_deployments"] = [
+            mapping.model_dump() for mapping in previous.policy.model_deployments
+        ]
     return incoming.model_copy(deep=True, update={
         "policy": Policy.model_validate(values),
         "published_at": incoming.published_at or previous.published_at,
@@ -370,16 +429,67 @@ def _message_facts(message: CollectedMessage) -> dict:
     data = message.policy.model_dump(mode="json")
     facts = {field: _reported_value(field, data[field]) for field in MESSAGE_FACT_FIELDS}
     facts["ended"] = bool(message.ended)
+    facts["quota_facts"] = _quota_signature(message.policy.quota_facts)
+    facts["model_deployments"] = _deployment_signature(message.policy.model_deployments)
     if not any(facts[field] not in (None, []) for field in MESSAGE_BENEFIT_FIELDS):
         facts["summary"] = " ".join(message.summary.split()).casefold()
     return facts
 
 
+def _normal_text(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def _quota_signature(facts: Iterable[QuotaFact]) -> tuple[tuple[object, ...], ...]:
+    """Order-independent evidence identity; a display reorder is not a change."""
+    return tuple(
+        sorted(
+            {
+                (
+                    fact.amount is not None,
+                    fact.amount if fact.amount is not None else 0.0,
+                    _normal_text(fact.unit),
+                    _normal_text(fact.period) or _normal_text(UNKNOWN),
+                    _normal_text(fact.scope) or "unspecified",
+                    _normal_text(fact.condition),
+                    tuple(sorted({_normal_text(item) for item in fact.model_ids if item.strip()})),
+                    fact.source_url,
+                    _normal_text(fact.quote),
+                    _normal_text(fact.value_phrase),
+                )
+                for fact in facts
+            }
+        )
+    )
+
+
+def _deployment_signature(
+    mappings: Iterable[ModelDeployment],
+) -> tuple[tuple[str, ...], ...]:
+    return tuple(
+        sorted(
+            {
+                (
+                    _normal_text(mapping.provider),
+                    mapping.model_id.casefold(),
+                    mapping.base_model.casefold(),
+                    mapping.source_url,
+                    _normal_text(mapping.quote),
+                )
+                for mapping in mappings
+            }
+        )
+    )
+
+
 def _facts(resource: Policy) -> dict:
     data = resource.model_dump(mode="json")
-    return {
+    facts = {
         key: sorted(set(data[key])) if key == "models" else data[key] for key in IMPORTANT_FIELDS
     }
+    facts["quota_facts"] = _quota_signature(resource.quota_facts)
+    facts["model_deployments"] = _deployment_signature(resource.model_deployments)
+    return facts
 
 
 def _snapshot(resource: Resource) -> dict:
@@ -484,6 +594,34 @@ MIGRATIONS = (
     );
     CREATE INDEX IF NOT EXISTS news_items_resource ON news_items(resource_id, discovered_at);
     CREATE INDEX IF NOT EXISTS news_items_task ON news_items(task_id, discovered_at);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS source_definitions (
+        id TEXT PRIMARY KEY,
+        payload TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS source_states (
+        source_id TEXT PRIMARY KEY,
+        payload TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS source_entries (
+        source_id TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        PRIMARY KEY(source_id, external_id)
+    );
+    CREATE INDEX IF NOT EXISTS source_entries_id ON source_entries(id);
+    CREATE TABLE IF NOT EXISTS source_snapshots (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS source_snapshots_source
+        ON source_snapshots(source_id, fetched_at);
     """,
 )
 
@@ -834,10 +972,15 @@ class Repository:
                     category=policy.category,
                     provider_domain=policy.provider_domain,
                     service_key=policy.service_key or _token(policy.service),
+                    access_mode=policy.access_mode,
                     aliases=policy.aliases,
                     first_seen_at=now,
                     last_checked_at=now,
                 )
+                if previous is not None and not current.evidence:
+                    # This resource carries no verified policy evidence, so its
+                    # entry mode is message-derived; keep it aligned with the offer.
+                    current.access_mode = report.policy.access_mode
                 if previous is None:
                     # News rows reference the resource; claims stay out of verified fields.
                     self._save_resource(connection, current)
@@ -1408,6 +1551,7 @@ class Repository:
                             category=incoming.category,
                             provider_domain=incoming.provider_domain,
                             service_key=incoming.service_key or _token(incoming.service),
+                            access_mode=incoming.access_mode,
                             aliases=incoming.aliases,
                             check_status=incoming.check_status,
                             failure_reason=reason,
@@ -1420,6 +1564,16 @@ class Repository:
                     continue
 
                 checked = validate_policy(incoming, now)
+                if previous:
+                    # An optional fact absent from this check neither proves nor
+                    # disproves the previous explicit evidence.
+                    carried: dict[str, Any] = {}
+                    if not checked.quota_facts:
+                        carried["quota_facts"] = previous.quota_facts
+                    if not checked.model_deployments:
+                        carried["model_deployments"] = previous.model_deployments
+                    if carried:
+                        checked = checked.model_copy(deep=True, update=carried)
                 policy_data = checked.model_dump()
                 policy_data["resource_id"] = None
                 policy_data["service_key"] = (
@@ -1492,6 +1646,178 @@ class Repository:
                     )
                     changes.append(change)
         return changes
+
+
+    # --- Managed discovery sources -----------------------------------------
+    @staticmethod
+    def _entry_content_hash(entry: SourceEntry) -> str:
+        published = entry.published_at.isoformat() if entry.published_at else ""
+        payload = "\x1f".join(  # noqa: FLY002 - an explicit separator is clearer than escapes
+            [entry.url, entry.title, entry.content, entry.raw_content, published]
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def list_source_definitions(
+        self, configured: Sequence[SourceDefinition] = ()
+    ) -> list[SourceDefinition]:
+        """Merge configured sources with stored overrides, stored facts winning."""
+        with self._connect() as connection:
+            stored = {
+                row["id"]: SourceDefinition.model_validate_json(row["payload"])
+                for row in connection.execute(
+                    "SELECT id, payload FROM source_definitions ORDER BY id"
+                )
+            }
+        merged: dict[str, SourceDefinition] = {}
+        order: list[str] = []
+        for source in configured:
+            if source.id not in merged:
+                order.append(source.id)
+            merged[source.id] = source
+        for source_id, source in stored.items():
+            if source_id not in merged:
+                order.append(source_id)
+            # Local enable/review state is authoritative over config defaults.
+            merged[source_id] = source
+        return [merged[source_id] for source_id in order]
+
+    def save_source_definition(self, source: SourceDefinition) -> SourceDefinition:
+        source = SourceDefinition.model_validate(source)
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO source_definitions(id, payload, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, "
+                "updated_at=excluded.updated_at",
+                (source.id, source.model_dump_json(), utc_now().isoformat()),
+            )
+        return source
+
+    def get_source_state(self, source_id: str) -> SourceState | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM source_states WHERE source_id = ?", (source_id,)
+            ).fetchone()
+            return SourceState.model_validate_json(row[0]) if row else None
+
+    def list_source_states(self) -> list[SourceState]:
+        with self._connect() as connection:
+            return [
+                SourceState.model_validate_json(row[0])
+                for row in connection.execute(
+                    "SELECT payload FROM source_states ORDER BY source_id"
+                )
+            ]
+
+    def get_source_entry(self, source_id: str, external_id: str) -> SourceEntry | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM source_entries WHERE source_id = ? AND external_id = ?",
+                (source_id, external_id),
+            ).fetchone()
+            return SourceEntry.model_validate_json(row[0]) if row else None
+
+    def list_source_entries(
+        self, source_id: str | None = None, *, limit: int = 100, offset: int = 0
+    ) -> list[SourceEntry]:
+        conditions, arguments = "", []
+        if source_id is not None:
+            conditions = " WHERE source_id = ?"
+            arguments.append(source_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM source_entries"
+                + conditions
+                + " ORDER BY json_extract(payload, '$.last_seen_at') DESC, rowid DESC"
+                " LIMIT ? OFFSET ?",
+                (*arguments, max(1, limit), max(0, offset)),
+            ).fetchall()
+        return [SourceEntry.model_validate_json(row[0]) for row in rows]
+
+    def commit_source_scan(
+        self,
+        state: SourceState,
+        entries: Sequence[SourceEntry],
+        snapshot: SourceSnapshot | None = None,
+    ) -> list[SourceEntry]:
+        """Persist one source scan atomically: entries and snapshot, then state."""
+        state = SourceState.model_validate(state)
+        supplied = [SourceEntry.model_validate(entry) for entry in entries]
+        if not state.source_id:
+            raise ValueError("来源状态缺少来源标识")
+        for entry in supplied:
+            if entry.source_id != state.source_id:
+                raise ValueError("来源条目与来源状态的作用域不一致")
+        if snapshot is not None:
+            snapshot = SourceSnapshot.model_validate(snapshot)
+            if snapshot.source_id != state.source_id:
+                raise ValueError("来源快照与来源状态的作用域不一致")
+        persisted: list[SourceEntry] = []
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = {
+                row["external_id"]: SourceEntry.model_validate_json(row["payload"])
+                for row in connection.execute(
+                    "SELECT external_id, payload FROM source_entries WHERE source_id = ?",
+                    (state.source_id,),
+                )
+            }
+            for entry in supplied:
+                content_hash = entry.content_hash or self._entry_content_hash(entry)
+                old = existing.get(entry.external_id)
+                if old is None:
+                    value = entry.model_copy(update={"content_hash": content_hash, "revision": 1})
+                else:
+                    revised = content_hash != old.content_hash
+                    value = entry.model_copy(
+                        update={
+                            "id": old.id,
+                            "first_seen_at": old.first_seen_at,
+                            "content_hash": content_hash,
+                            "revision": old.revision + (1 if revised else 0),
+                        }
+                    )
+                connection.execute(
+                    "INSERT INTO source_entries(source_id, external_id, id, payload) "
+                    "VALUES (?, ?, ?, ?) ON CONFLICT(source_id, external_id) DO UPDATE SET "
+                    "id=excluded.id, payload=excluded.payload",
+                    (state.source_id, value.external_id, value.id, value.model_dump_json()),
+                )
+                existing[value.external_id] = value
+                persisted.append(value)
+            if snapshot is not None:
+                connection.execute(
+                    "INSERT INTO source_snapshots(id, source_id, fetched_at, payload) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        snapshot.id,
+                        snapshot.source_id,
+                        snapshot.fetched_at.isoformat(),
+                        snapshot.model_dump_json(),
+                    ),
+                )
+            connection.execute(
+                "INSERT INTO source_states(source_id, payload, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(source_id) DO UPDATE SET payload=excluded.payload, "
+                "updated_at=excluded.updated_at",
+                (state.source_id, state.model_dump_json(), utc_now().isoformat()),
+            )
+        return persisted
+
+    def get_source_snapshot(self, snapshot_id: str) -> SourceSnapshot | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM source_snapshots WHERE id = ?", (snapshot_id,)
+            ).fetchone()
+            return SourceSnapshot.model_validate_json(row[0]) if row else None
+
+    def list_source_snapshots(self, source_id: str, *, limit: int = 20) -> list[SourceSnapshot]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM source_snapshots WHERE source_id = ? "
+                "ORDER BY fetched_at DESC, rowid DESC LIMIT ?",
+                (source_id, max(1, limit)),
+            ).fetchall()
+        return [SourceSnapshot.model_validate_json(row[0]) for row in rows]
 
     def mark_interrupted(self) -> None:
         now = utc_now()

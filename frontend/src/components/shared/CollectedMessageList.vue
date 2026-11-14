@@ -5,6 +5,7 @@ import type { CollectedMessage, NewsItem } from '@/api/types'
 import { useAppQuery } from '@/api/queries'
 import { formatBoolean, formatDate, labelFor } from '@/app/presentation'
 import MessageSources from './MessageSources.vue'
+import PolicyFacts from './PolicyFacts.vue'
 
 type MessageItem = CollectedMessage | NewsItem
 
@@ -75,6 +76,7 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
   community: '社区',
   github: 'GitHub',
   search: '搜索摘要',
+  catalog: '第三方目录',
 }
 
 function kindLabel(value: string): string {
@@ -266,6 +268,7 @@ function sourceTypes(item: MessageItem): string {
           </details>
         </dd>
       </dl>
+      <PolicyFacts v-if="!compact" :policy="view.item.policy" />
       <p v-if="view.hasTranslation" class="meta translation-note">机器翻译，未经核验</p>
       <p v-if="!compact" class="form-note">
         以上为收集到的报告参数，未经逐项核验；未知条件保留，不视为收集失败。

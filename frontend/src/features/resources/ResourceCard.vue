@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
+import { accessModeHint, accessModeLabel, accessModeOf } from '@/api/accessMode'
 import type { Resource, ResourceReview } from '@/api/types'
 import { useAppQuery } from '@/api/queries'
 import { collectionLabel, hasCollectedSources, policyStatusLabel, formatDate, labelFor } from '@/app/presentation'
@@ -18,6 +19,9 @@ const sourceCount = computed(() => new Set(
     .filter((source) => /^https?:\/\//i.test(source.url))
     .map((source) => source.url)),
 ).size)
+const accessMode = computed(() => accessModeOf(props.resource))
+const accessModeText = computed(() => accessModeLabel(app.value, props.resource))
+const accessModeTooltip = computed(() => accessModeHint(props.resource))
 const reviewLabel = computed(() => props.review
   ? app.value?.review_states?.[props.review.state] ?? props.review.state
   : '尚无人工记录')
@@ -33,6 +37,13 @@ const reviewLabel = computed(() => props.review
             <bdi>{{ resource.provider }} · {{ resource.service }}</bdi>
           </RouterLink>
         </h2>
+        <p class="resource-access-mode">
+          <span
+            class="badge access-mode-badge"
+            :class="`access-mode-badge--${accessMode}`"
+            :title="accessModeTooltip"
+          >{{ accessModeText }}</span>
+        </p>
       </div>
       <dl class="resource-index-facts">
         <div>
@@ -76,6 +87,11 @@ const reviewLabel = computed(() => props.review
 .resource-registration span { font-family: var(--font-ui); margin-inline-end: 0.5rem; }
 .resource-identity h2 { margin: 0; font-family: var(--font-body); font-size: 1.125rem; line-height: 1.4; font-weight: 600; }
 .resource-identity a { text-decoration-thickness: 1px; text-underline-offset: 0.2em; }
+.resource-access-mode { margin: 0.35rem 0 0; }
+.access-mode-badge { font-family: var(--font-ui); }
+.access-mode-badge--api { color: var(--color-success); border-color: var(--color-success-border); }
+.access-mode-badge--product { color: var(--color-warning); border-color: var(--color-warning-border); }
+.access-mode-badge--unknown { color: var(--color-text-secondary); }
 .resource-index-facts { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr); margin: 0; gap: 1rem; }
 .resource-index-facts > div { min-inline-size: 0; padding-inline-start: 0.8rem; border-inline-start: 1px solid var(--color-border); }
 .resource-index-facts dt { margin-block-end: 0.3rem; font-family: var(--font-ui); font-size: 0.625rem; line-height: 1.5; font-weight: 500; color: var(--color-text-secondary); }

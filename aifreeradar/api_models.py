@@ -12,11 +12,14 @@ from .models import (
     Change,
     NewsItem,
     Record,
+    ResearchTrace,
     Resource,
     ResourceReview,
     ReviewAction,
     RunStats,
     Scope,
+    SourceDefinition,
+    SourceState,
     UserAction,
 )
 
@@ -37,6 +40,7 @@ class RunRead(Record):
     schedule_day: str | None
     stats: RunStats | None
     has_briefing: bool
+    research_traces: list[ResearchTrace] = Field(default_factory=list)
 
 
 class LeadRead(Record):
@@ -75,6 +79,11 @@ class BriefingRead(Record):
 
 class ApiError(Record):
     detail: str
+
+
+class SourceRead(Record):
+    definition: SourceDefinition
+    state: SourceState | None = None
 
 
 class AppRead(Record):
